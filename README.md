@@ -78,5 +78,3 @@ If you don’t want to use a GitHub repo:
 
 * Modify `save_replay_and_generate_url` function logic
 * Or send replay files directly as Discord attachments instead of generating URLs
-
-```
