@@ -19,7 +19,7 @@ load_dotenv()
 #usage: python bot.py
 
 #reqs:
-#pip install python-dotenv discord.py
+#pip install python-dotenv discord.py tabulate
 
 #CONFIG (use .env file)
 #─────────────────────────────────────────────────────────────

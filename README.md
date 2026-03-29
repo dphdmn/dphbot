@@ -6,7 +6,7 @@ python bot.py
 # Requirements
 
 ```bash
-pip install python-dotenv discord.py
+pip install python-dotenv discord.py tabulate
 ```
 
 # Configuration (create .env file)
