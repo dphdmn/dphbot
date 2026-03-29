@@ -1,0 +1,82 @@
+# Usage
+```bash
+python bot.py
+````
+
+# Requirements
+
+```bash
+pip install python-dotenv discord.py
+```
+
+# Configuration (create .env file)
+
+## Bot settings
+
+* `BOT_TOKEN` → Discord bot token (KEEP SECRET)
+
+  * Get it here: [https://discord.com/developers/applications/](https://discord.com/developers/applications/)
+* `DB_PATH` → path to your local slidysim solves database
+
+  * Example: `C:/programs/!PROGRAMS/slidysim29/solves.db`
+* `DISCORD_USER_ID` → your Discord user ID
+
+  * Example: `537316990679777280`
+  * Used to restrict commands to you only
+
+---
+
+## IMPORTANT: Replay / file hosting setup (REQUIRED)
+
+This project **does not store replays inside the bot**.
+
+Instead:
+
+* Replays are saved into a **GitHub repository you own**
+* Links are generated using **GitHub Pages**
+
+### You must set this up:
+
+1. Create your own GitHub repository
+   Example: [https://github.com/dphdmn/mytextfiles](https://github.com/dphdmn/mytextfiles)
+
+2. Enable GitHub Pages
+
+3. Clone the repo locally using git
+
+4. Check `index.html` in the repo for redirect logic
+
+---
+
+## Replay config (.env)
+
+* `TXT_REPO_NAME`
+
+  * Example: `mytextfiles`
+  * Your GitHub repository name
+
+* `TXT_REPO_LOCAL_PATH`
+
+  * Example: `C:/Users/dphdmn/Documents`
+  * Folder that contains your cloned repo
+
+* `TXT_REPO_GITHUB`
+
+  * Example: `https://dphdmn.github.io`
+  * Your GitHub Pages base URL
+
+* `TXT_REPO_SUBFOLDERS`
+
+  * Example: `slidy/generated`
+  * Folder inside the repo where replay files are stored
+
+---
+
+## Alternative (no GitHub setup)
+
+If you don’t want to use a GitHub repo:
+
+* Modify `save_replay_and_generate_url` function logic
+* Or send replay files directly as Discord attachments instead of generating URLs
+
+```
