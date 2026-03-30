@@ -1,0 +1,9 @@
+todo list
+- wrap replay links with try except even if splits completely failed as a temporary solution, so marathon / avgs / replays can be uploaded manually at least even without metadata
+- /pbhistory (puzzle) (pbtype) gives pb history in given time period (without replays obv)
+- /coolsolves (puzzle) (pbtype) (N) gives N fastest / best moves / or tps solves (without replays obv)
+- (later?) proper splits for stuff like marathons/relays similar to how sst does it / support it in all relevant functions (hard) (lazy to do this)
+- /wrhistory (category) fetch recent wr history stuff from google sheet, add youtube links when possible (no replay links)
+- /webpb (category) (pbtype) (avg) (player) fetch pb of a player from server with replay (as file? because not uploading all that)
+- /weblb (category) (pbtype) (avg) (limit) fetch leaderboard for specific category from server (no replays)
+- /makereplay (solutionFile / solutionText) (scramble/puzzle) (tps/time) generate basic style replay link manually (as file? because not uploading all that)

@@ -370,6 +370,174 @@ async def playtime(interaction: discord.Interaction, timeframe: str = "all"):
         if 'conn' in locals():
             conn.close()
 
+@client.tree.command(description="Get your personal best history (progression of records) for a specific puzzle size")
+@app_commands.describe(
+    size="Puzzle size in NxM format (e.g., 4x5, 10x18, 5x5)",
+    pbtype="Type of personal best to track (time = lower better, moves = lower better, tps = higher better)",
+    time_limit="Optional maximum time in seconds (only solves under this count toward PBs)",
+    moves_limit="Optional maximum moves (only solves under this count toward PBs)",
+    tps_limit="Optional minimum TPS (only solves above this count toward PBs)",
+    hours_limit="Optional time window in hours (e.g., 24 for last day; defaults to all time)"
+)
+async def pbhistory(
+    interaction: discord.Interaction,
+    size: str,
+    pbtype: Literal["time", "moves", "tps"] = "time",
+    time_limit: float = None,
+    moves_limit: int = None,
+    tps_limit: float = None,
+    hours_limit: int = None
+):
+    await interaction.response.defer(ephemeral=False)
+    
+    try:
+        # Check if the user is authorized
+        if interaction.user.id != YOUR_USER_ID:
+            await interaction.followup.send(
+                "You are not authorized to use this command.",
+                ephemeral=True
+            )
+            return
+        
+        # Parse size
+        try:
+            width, height = map(int, size.lower().split('x'))
+        except:
+            await interaction.followup.send(
+                "Invalid size format. Please use NxM format (e.g., 4x5, 10x18).",
+                ephemeral=False
+            )
+            return
+        
+        # Connect to SQLite database
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Calculate timestamp cutoff if hours_limit is provided
+        timestamp_cutoff = None
+        if hours_limit is not None:
+            timestamp_cutoff = int(timemodule.time() - (hours_limit * 3600)) * 1000
+        
+        # Build the base query (same filters as getpb, but we fetch ALL qualifying solves)
+        query = """
+            SELECT 
+                a.time,
+                a.moves,
+                a.tps,
+                b.timestamp
+            FROM 
+                (single_solves a 
+                JOIN solves b 
+                ON a.id BETWEEN b.single_start_id AND b.single_end_id) 
+            WHERE 
+                a.completed = 1 
+                AND b.scrambler = 'Random permutation' 
+                AND (b.success IS NULL OR b.success = 1)
+                AND b.solve_type != 'BLD'
+                AND b.display_type = 'Standard'
+                AND a.width = ? AND a.height = ?
+        """
+        
+        params = [width, height]
+        
+        # Add hours_limit filter if provided
+        if timestamp_cutoff is not None:
+            query += " AND b.timestamp >= ?"
+            params.append(timestamp_cutoff)
+        
+        # Add optional PB-consideration filters (these define which solves are eligible to become PBs)
+        if time_limit is not None:
+            query += " AND a.time < ?"
+            params.append(int(time_limit * 1000))
+            
+        if moves_limit is not None:
+            query += " AND a.moves < ?"
+            params.append(moves_limit * 1000)
+            
+        if tps_limit is not None:
+            query += " AND a.tps > ?"
+            params.append(tps_limit * 1000)
+        
+        # Always order by timestamp ASC so we can track PB progression chronologically
+        query += " ORDER BY b.timestamp ASC"
+        
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        
+        if not rows:
+            size_filter = f" for size {width}x{height}"
+            time_filter = f" under {time_limit}s" if time_limit is not None else ""
+            moves_filter = f" with moves < {moves_limit}" if moves_limit is not None else ""
+            tps_filter = f" with TPS > {tps_limit}" if tps_limit is not None else ""
+            hours_filter = f" in last {hours_limit} hours" if hours_limit is not None else ""
+            
+            await interaction.followup.send(
+                f"No matching solves found{size_filter}{time_filter}{moves_filter}{tps_filter}{hours_filter}.",
+                ephemeral=False
+            )
+            return
+        
+        # Determine how to compare for the chosen pbtype
+        if pbtype in ["time", "moves"]:
+            best_value = float('inf')
+            is_better = lambda val: val < best_value
+        else:  # tps
+            best_value = float('-inf')
+            is_better = lambda val: val > best_value
+        
+        # Walk through solves in chronological order and record only new PBs
+        pb_history = []
+        for time_ms, moves_ms, tps_ms, ts_ms in rows:
+            val = time_ms if pbtype == "time" else moves_ms if pbtype == "moves" else tps_ms
+            if is_better(val):
+                pb_history.append((time_ms, moves_ms, tps_ms, ts_ms))
+                best_value = val
+        
+        # Build the markdown table (exactly as requested)
+        table_lines = [
+            " Time (s) | Moves |  TPS   | Date (UTC)",
+            "----------|-------|--------|--------------"
+        ]
+        
+        for time_ms, moves_ms, tps_ms, ts_ms in pb_history:
+            time_s = time_ms / 1000
+            moves = int(moves_ms / 1000)
+            tps = tps_ms / 1000
+            date_str = datetime.fromtimestamp(ts_ms / 1000).strftime('%Y-%m-%d %H:%M:%S')
+            table_lines.append(f"{time_s:>9.3f} | {moves:>5} | {tps:>6.3f} | {date_str}")
+        
+        # Prepare filter metadata (exactly as requested)
+        filter_info = []
+        if time_limit is not None:
+            filter_info.append(f"Time < {time_limit}s")
+        if moves_limit is not None:
+            filter_info.append(f"Moves < {moves_limit}")
+        if tps_limit is not None:
+            filter_info.append(f"TPS > {tps_limit}")
+        if hours_limit is not None:
+            filter_info.append(f"Last {hours_limit}h")
+        
+        metadata = f"Filters: {', '.join(filter_info) if filter_info else 'None'}\n"
+        
+        # Create embed (styled similarly to playtime + getpb)
+        embed = discord.Embed(
+            title=f"📜 PB History ({pbtype}) — {width}x{height}",
+            color=discord.Color.gold()
+        )
+        
+        embed.description = (
+            f"```\n" + "\n".join(table_lines) + "\n```\n"
+            f"{metadata}"
+        )
+        
+        await interaction.followup.send(embed=embed, ephemeral=False)
+
+    except Exception as e:
+        await interaction.followup.send(f"Error: {str(e)}", ephemeral=False)
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
 @client.tree.command(description="Get your personal best solve for a specific puzzle size")
 @app_commands.describe(
     size="Puzzle size in NxM format (e.g., 4x5, 10x18, 5x5)",
