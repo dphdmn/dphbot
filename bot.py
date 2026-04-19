@@ -13,6 +13,8 @@ import time as timemodule
 from splits import splits_formatted as getsplits
 from marathon import getMarathons
 from typing import Literal
+import subprocess
+import asyncio
 
 load_dotenv()
 
@@ -77,8 +79,13 @@ SUBFOLDERS = os.getenv("TXT_REPO_SUBFOLDERS")
 # Or modify other functions to send txt files instead of creating URLs
 #─────────────────────────────────────────────────────────────
 
+# Script path (only for web update command)
+script_path = os.getenv("UPDATEWEB_SCRIPT_PATH")
+
 REPO_LOCAL_DIR = os.path.join(LOCAL_PATH, REPO_NAME)
 GENERATED_DIR = os.path.join(REPO_LOCAL_DIR, SUBFOLDERS)
+
+updateweb_running = False
 
 def save_replay_and_generate_url(file_content: str, filename: str) -> str:
     os.makedirs(GENERATED_DIR, exist_ok=True)
@@ -119,6 +126,91 @@ class MyClient(discord.Client):
         await self.tree.sync()
 
 client = MyClient()
+
+# Add this global variable near the top of your file with other globals
+updateweb_running = False
+
+@client.tree.command(description="Update web backup by running updateweb.py script")
+async def updateweb(interaction: discord.Interaction):
+    global updateweb_running
+
+    await interaction.response.defer(ephemeral=False)
+
+    try:
+        if updateweb_running:
+            await interaction.followup.send(
+                "⚠️ Web update is already in progress. Please wait.",
+                ephemeral=True
+            )
+            return
+
+        script_path = os.getenv("UPDATEWEB_SCRIPT_PATH")
+        if not script_path or not os.path.exists(script_path):
+            await interaction.followup.send("Error: script path invalid.", ephemeral=True)
+            return
+
+        updateweb_running = True
+
+        # 🥚 Start thinking message
+        msg = await interaction.followup.send("🤖 thinking about eggs :zzz:")
+
+        start_time = timemodule.time()
+
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUNBUFFERED"] = "1"
+
+        script_dir = os.path.dirname(script_path)
+        script_name = os.path.basename(script_path)
+
+        process = await asyncio.create_subprocess_exec(
+            "python", "-u", script_name,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=script_dir,
+            env=env
+        )
+
+        # 🥚 Animate while running
+        async def animate():
+            states = [
+                "🤖 thinking about eggs (web update is taking 3-4 minutes) :zzz:",
+                "🤖 thinking about eggs (web update is taking 3-4 minutes) :zzz: :zzz: ",
+                "🤖 thinking about eggs (web update is taking 3-4 minutes) :zzz: :zzz: "
+            ]
+            i = 0
+            while process.returncode is None:
+                await msg.edit(content=states[i % len(states)])
+                i += 1
+                await asyncio.sleep(10)
+
+        anim_task = asyncio.create_task(animate())
+
+        stdout, stderr = await process.communicate()
+
+        anim_task.cancel()
+
+        elapsed_time = timemodule.time() - start_time
+        minutes = int(elapsed_time // 60)
+        seconds = elapsed_time % 60
+        time_str = f"{minutes}m {seconds:.1f}s" if minutes > 0 else f"{seconds:.1f}s"
+
+        if process.returncode != 0:
+            error_msg = stderr.decode('utf-8') if stderr else "Unknown error"
+            await msg.edit(content=f"❌ Web update failed after {time_str}\n{error_msg[:1000]}")
+            return
+
+        # 🥚 Final success message (edit instead of new send)
+        await msg.edit(content=f""":egg: Web backup updated successfully! (took {time_str})
+
+**Leaderboard URL:** https://slidysim.github.io/lb
+**Web-only scores:** https://slidysim.github.io/archive""")
+
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error running web update: {str(e)}")
+
+    finally:
+        updateweb_running = False
 
 @client.tree.command(description="Get best marathon splits for NxM puzzles")
 @app_commands.describe(puzzle_size="Puzzle size in NxM format (e.g. 3x3)")
