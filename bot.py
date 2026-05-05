@@ -15,6 +15,7 @@ from marathon import getMarathons
 from typing import Literal
 import subprocess
 import asyncio
+import stats
 
 load_dotenv()
 
@@ -129,6 +130,115 @@ client = MyClient()
 
 # Add this global variable near the top of your file with other globals
 updateweb_running = False
+
+def get_puzzle_size_from_channel(channel_name: str) -> str:
+    """Extract puzzle size from channel name if it matches NxM format"""
+    import re
+    match = re.search(r'(\d+x\d+)', channel_name, re.IGNORECASE)
+    if match:
+        return match.group(1).lower()
+    return "4x4"
+
+
+@client.tree.command(description="Get personal bests for a puzzle size")
+@app_commands.describe(
+    username="Player name (or part of it) - defaults to your Discord display name",
+    puzzle_size="Puzzle size in NxM format (e.g., 4x4, 3x3) - defaults to channel name or 4x4",
+    power_system="Power system to use for tier info (modern, classic, fmc)"
+)
+async def getpb(interaction: discord.Interaction, username: str = None, puzzle_size: str = None, power_system: str = "modern"):
+    """Get personal bests for a player on a specific puzzle size"""
+    await interaction.response.defer(ephemeral=False)
+    
+    try:
+        
+        # Use caller's display name if username not provided
+        if username is None:
+            username = interaction.user.display_name
+        
+        # Use channel name to determine puzzle size if not provided
+        if puzzle_size is None:
+            channel_name = interaction.channel.name if hasattr(interaction.channel, 'name') else ""
+            puzzle_size = get_puzzle_size_from_channel(channel_name)
+        
+        if power_system not in ["modern", "classic", "fmc"]:
+            await interaction.followup.send("Power system must be: modern, classic, or fmc", ephemeral=True)
+            return
+        
+        result = stats.get_pb(username, puzzle_size, power_system)
+        
+        if len(result) > 1900:
+            # Split into chunks if too long
+            chunks = [result[i:i+1900] for i in range(0, len(result), 1900)]
+            await interaction.followup.send(f"```\n{chunks[0]}\n```")
+            for chunk in chunks[1:]:
+                await interaction.followup.send(f"```\n{chunk}\n```")
+        else:
+            await interaction.followup.send(f"```\n{result}\n```")
+    
+    except Exception as e:
+        await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+
+
+@client.tree.command(description="Get power ranking for a player")
+@app_commands.describe(
+    username="Player name (or part of it) - defaults to your Discord display name",
+    power_system="Power system: modern, classic, or fmc"
+)
+async def rank(interaction: discord.Interaction, username: str = None, power_system: str = "modern"):
+    """Get power ranking info for a player"""
+    await interaction.response.defer(ephemeral=False)
+    
+    try:
+        
+        # Use caller's display name if username not provided
+        if username is None:
+            username = interaction.user.display_name
+        
+        if power_system not in ["modern", "classic", "fmc"]:
+            await interaction.followup.send("Power system must be: modern, classic, or fmc", ephemeral=True)
+            return
+        
+        result = stats.get_rank(username, power_system)
+        await interaction.followup.send(result)
+    
+    except Exception as e:
+        await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+
+
+@client.tree.command(description="Get tier requirements for a puzzle size")
+@app_commands.describe(
+    tier_name="Tier name (e.g., 'Grandmaster', 'Ascended', 'Gold I')",
+    power_system="Power system: modern, classic, or fmc",
+    puzzle_size="Puzzle size in NxM format (e.g., 4x4) - defaults to channel name or 4x4"
+)
+async def getreq(interaction: discord.Interaction, tier_name: str, power_system: str = "modern", puzzle_size: str = None):
+    """Get the time/move requirements for a specific tier on a puzzle size"""
+    await interaction.response.defer(ephemeral=False)
+    
+    try:
+        
+        # Use channel name to determine puzzle size if not provided
+        if puzzle_size is None:
+            channel_name = interaction.channel.name if hasattr(interaction.channel, 'name') else ""
+            puzzle_size = get_puzzle_size_from_channel(channel_name)
+        
+        if power_system not in ["modern", "classic", "fmc"]:
+            await interaction.followup.send("Power system must be: modern, classic, or fmc", ephemeral=True)
+            return
+        
+        result = stats.get_req(tier_name, power_system, puzzle_size)
+        
+        if len(result) > 1900:
+            chunks = [result[i:i+1900] for i in range(0, len(result), 1900)]
+            await interaction.followup.send(f"```\n{chunks[0]}\n```")
+            for chunk in chunks[1:]:
+                await interaction.followup.send(f"```\n{chunk}\n```")
+        else:
+            await interaction.followup.send(f"```\n{result}\n```")
+    
+    except Exception as e:
+        await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
 
 @client.tree.command(description="Update web backup by running updateweb.py script")
 async def updateweb(interaction: discord.Interaction):
@@ -638,7 +748,7 @@ async def pbhistory(
     moves_limit="Optional maximum moves",
     hours_limit="Optional time window in hours (e.g., 24 for last day)"
 )
-async def getpb(
+async def getpbexe(
     interaction: discord.Interaction,
     size: str,
     pbtype: Literal["time", "moves", "tps"] = "time",
