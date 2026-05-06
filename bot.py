@@ -720,9 +720,9 @@ async def updateweb(interaction: discord.Interaction):
         # 🥚 Animate while running
         async def animate():
             states = [
-                "🤖 thinking about eggs (web update is taking 3-4 minutes) :zzz:",
-                "🤖 thinking about eggs (web update is taking 3-4 minutes) :zzz: :zzz: ",
-                "🤖 thinking about eggs (web update is taking 3-4 minutes) :zzz: :zzz: "
+                ":zzz: (web update is taking about 40 seconds) :zzz:",
+                ":zzz: :zzz: (web update is taking about 40 seconds) :zzz: :zzz: ",
+                ":zzz: :zzz: :zzz: (web update is taking about 40 seconds) :zzz: :zzz: :zzz: "
             ]
             i = 0
             while process.returncode is None:
