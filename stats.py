@@ -90,12 +90,35 @@ def parse_puzzle_size(puzzle_str):
         raise ValueError("Puzzle size must be NxM, egg, 4x4")
     return int(parts[0]), int(parts[1])
 
-def format_time_ms(ms, score_type="time"):
+def format_score(ms, score_type="time"):
+    """Format a stored value for display.
+    Moves are stored as *1000 in data, so we divide by 1000.
+    - 'time': shows with optional hh:mm:ss and ms to 3 decimal places
+    - 'move': shows as integer if fractional part is zero, else with 3 decimals
+    """
     if ms is None or ms == -1:
         return "-"
+    
     if score_type == "move":
-        return str(int(ms))
-    return f"{ms/1000:.3f}"
+        # moves are stored as actual_move * 1000
+        val = ms / 1000.0
+        if ms % 1000 == 0:
+            return str(int(val))  # e.g., 23
+        else:
+            return f"{val:.3f}"  # e.g., 23.450
+    else:
+        # time: ms to total seconds
+        total_sec = ms / 1000.0
+        hours = int(total_sec // 3600)
+        minutes = int((total_sec % 3600) // 60)
+        seconds = total_sec % 60
+        
+        if hours > 0:
+            return f"{hours}:{minutes:02d}:{seconds:06.3f}"
+        elif minutes > 0:
+            return f"{minutes}:{seconds:06.3f}"
+        else:
+            return f"{seconds:.3f}"
 
 def find_player_in_power(power_data, username_substring):
     for row in power_data:
@@ -190,18 +213,18 @@ def get_pb(username_substring, puzzle_size, power_system="modern", display_type=
         def get_primary(score):
             return score['time']
         def format_primary(val):
-            return f"{val/1000:.3f}" if val and val != -1 else "-"
+            return format_score(val, "time")
         def format_secondary(score):
-            moves = f"{score['moves']/1000:.3f}" if score['moves'] and score['moves'] != -1 else "-"
+            moves = format_score(score['moves'], "move") if score['moves'] and score['moves'] != -1 else "-"
             tps = f"{score['tps']/1000:.3f}" if score['tps'] and score['tps'] != -1 else "-"
             return f"({moves}/{tps})"
     elif pb_type == "move":
         def get_primary(score):
             return score['moves']
         def format_primary(val):
-            return f"{val/1000:.3f}" if val and val != -1 else "-"
+            return format_score(val, "move")
         def format_secondary(score):
-            time = f"{score['time']/1000:.3f}" if score['time'] and score['time'] != -1 else "-"
+            time = format_score(score['time'], "time") if score['time'] and score['time'] != -1 else "-"
             tps = f"{score['tps']/1000:.3f}" if score['tps'] and score['tps'] != -1 else "-"
             return f"({time}/{tps})"
     elif pb_type == "tps":
@@ -210,14 +233,14 @@ def get_pb(username_substring, puzzle_size, power_system="modern", display_type=
         def format_primary(val):
             return f"{val/1000:.3f}" if val and val != -1 else "-"
         def format_secondary(score):
-            time = f"{score['time']/1000:.3f}" if score['time'] and score['time'] != -1 else "-"
-            moves = f"{score['moves']/1000:.3f}" if score['moves'] and score['moves'] != -1 else "-"
+            time = format_score(score['time'], "time") if score['time'] and score['time'] != -1 else "-"
+            moves = format_score(score['moves'], "move") if score['moves'] and score['moves'] != -1 else "-"
             return f"({time}/{moves})"
     else:
         def get_primary(score):
             return score['time']
         def format_primary(val):
-            return str(int(val)) if val and val != -1 else "-"
+            return format_score(val, "time")
         def format_secondary(score):
             return ""
     
@@ -247,11 +270,14 @@ def get_pb(username_substring, puzzle_size, power_system="modern", display_type=
                         if tier_idx < len(tiers) - 1:
                             next_tier = tiers[tier_idx + 1]
                             next_req = next_tier['times'][idx]
-                            next_req_str = f"{next_req/1000:.3f}"
+                            if pb_type == "time":
+                                next_req_str = format_score(next_req, "time")
+                            else:  # move for fmc - tier requirements are raw move counts
+                                next_req_str = str(int(next_req))
                             tier_annotation += f"({next_tier['name']}={next_req_str})"
                     break
         
-        line = f"{cat_id:<20}: {value_str}{tier_annotation}"
+        line = f"{cat_id}: {value_str}{tier_annotation}"
         lines.append(line)
     
     if not lines:
@@ -344,7 +370,7 @@ def get_req(tier_substring, power_system, puzzle_size):
                 if power_system == "fmc":
                     req_str = str(int(req_val))
                 else:
-                    req_str = f"{req_val/1000:.3f}"
+                    req_str = format_score(req_val, "time")
                 reqs.append(req_str)
             line = f"{cat['id']}: {' '.join(reqs)}"
             lines.append(line)
