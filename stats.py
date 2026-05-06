@@ -83,8 +83,11 @@ def _run_power(power_system="modern", display_type="Standard", control_type="uni
 # ====================== HELPER FUNCTIONS ======================
 def parse_puzzle_size(puzzle_str):
     parts = puzzle_str.lower().split('x')
-    if len(parts) != 2:
-        raise ValueError("Puzzle size must be NxM, e.g., 4x4")
+    if len(parts) == 1:
+        # Duplicate the single part
+        return int(parts[0]), int(parts[0])
+    elif len(parts) != 2:
+        raise ValueError("Puzzle size must be NxM, egg, 4x4")
     return int(parts[0]), int(parts[1])
 
 def format_time_ms(ms, score_type="time"):
