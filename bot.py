@@ -16,6 +16,11 @@ from typing import Literal
 import subprocess
 import asyncio
 import stats
+from discord import app_commands
+from power_data import DISPLAY_TYPE_MAP, CONTROL_TYPE_MAP, PB_TYPE_MAP
+import re
+
+
 
 load_dotenv()
 
@@ -132,7 +137,7 @@ client = MyClient()
 updateweb_running = False
 
 def get_puzzle_size_from_channel(channel_name: str) -> str:
-    """Extract puzzle size from channel name if it matches NxM format"""
+    """extract puzzle size from channel name if it matches nxm format"""
     import re
     match = re.search(r'(\d+x\d+)', channel_name, re.IGNORECASE)
     if match:
@@ -140,105 +145,223 @@ def get_puzzle_size_from_channel(channel_name: str) -> str:
     return "4x4"
 
 
-@client.tree.command(description="Get personal bests for a puzzle size")
+# helper function for autocomplete
+async def display_type_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    """autocomplete for display types"""
+    choices = []
+    for name in DISPLAY_TYPE_MAP.values():
+        if current.lower() in name.lower():
+            choices.append(app_commands.Choice(name=name, value=name))
+    return choices[:25]
+
+async def control_type_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    """autocomplete for control types"""
+    choices = []
+    for name in CONTROL_TYPE_MAP.values():
+        if current.lower() in name.lower():
+            choices.append(app_commands.Choice(name=name, value=name))
+    return choices[:25]
+
+async def pb_type_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    """autocomplete for pb types"""
+    choices = []
+    for name in PB_TYPE_MAP.values():
+        if current.lower() in name.lower():
+            choices.append(app_commands.Choice(name=name, value=name))
+    return choices[:25]
+
+
+def validate_and_get_display(display_type: str):
+    """validate display_type case-insensitively, returns (id, name)"""
+    display_lower = display_type.lower().strip()
+    for id_, name in DISPLAY_TYPE_MAP.items():
+        if name.lower().strip() == display_lower:
+            return id_, name
+    for id_, name in DISPLAY_TYPE_MAP.items():
+        if display_lower in name.lower().strip():
+            return id_, name
+    available = ", ".join(DISPLAY_TYPE_MAP.values())
+    raise ValueError(f"unknown display_type: '{display_type}'. available: {available}")
+
+def validate_and_get_control(control_type: str):
+    """validate control_type case-insensitively, returns (id, name)"""
+    control_lower = control_type.lower().strip()
+    for id_, name in CONTROL_TYPE_MAP.items():
+        if name.lower().strip() == control_lower:
+            return id_, name
+    for id_, name in CONTROL_TYPE_MAP.items():
+        if control_lower in name.lower().strip():
+            return id_, name
+    available = ", ".join(CONTROL_TYPE_MAP.values())
+    raise ValueError(f"unknown control_type: '{control_type}'. available: {available}")
+
+def validate_and_get_pb(pb_type: str):
+    """validate pb_type case-insensitively, returns id"""
+    pb_lower = pb_type.lower().strip()
+    for id_, name in PB_TYPE_MAP.items():
+        if name.lower().strip() == pb_lower:
+            return id_
+    # try singular/plural variations
+    if pb_lower.endswith('s'):
+        pb_singular = pb_lower[:-1]
+        for id_, name in PB_TYPE_MAP.items():
+            if name.lower().strip() == pb_singular:
+                return id_
+    else:
+        pb_plural = pb_lower + 's'
+        for id_, name in PB_TYPE_MAP.items():
+            if name.lower().strip() == pb_plural:
+                return id_
+    available = ", ".join(PB_TYPE_MAP.values())
+    raise ValueError(f"unknown pb_type: '{pb_type}'. available: {available}")
+
+
+@client.tree.command(description="get personal bests for a puzzle size")
 @app_commands.describe(
-    username="Player name (or part of it) - defaults to your Discord display name",
-    puzzle_size="Puzzle size in NxM format (e.g., 4x4, 3x3) - defaults to channel name or 4x4",
-    power_system="Power system to use for tier info (modern, classic, fmc)"
+    username="player name (or part of it) - defaults to your discord display name",
+    puzzle_size="puzzle size in nxm format (e.g., 4x4, 3x3) - defaults to channel name or 4x4",
+    power_system="power system to use for tier info",
+    display_type="display type for filtering scores",
+    control_type="control type for filtering scores",
+    pb_type="pb type to display"
 )
-async def getpb(interaction: discord.Interaction, username: str = None, puzzle_size: str = None, power_system: str = "modern"):
-    """Get personal bests for a player on a specific puzzle size"""
+@app_commands.choices(power_system=[
+    app_commands.Choice(name="modern", value="modern"),
+    app_commands.Choice(name="classic", value="classic"),
+    app_commands.Choice(name="fmc", value="fmc")
+])
+@app_commands.autocomplete(display_type=display_type_autocomplete)
+@app_commands.autocomplete(control_type=control_type_autocomplete)
+@app_commands.autocomplete(pb_type=pb_type_autocomplete)
+async def getpb(
+    interaction: discord.Interaction, 
+    username: str = None, 
+    puzzle_size: str = None, 
+    power_system: str = "modern", 
+    display_type: str = "standard", 
+    control_type: str = "unique", 
+    pb_type: str = "time"
+):
+    """get personal bests for a player on a specific puzzle size"""
     await interaction.response.defer(ephemeral=False)
     
     try:
-        
-        # Use caller's display name if username not provided
         if username is None:
             username = interaction.user.display_name
         
-        # Use channel name to determine puzzle size if not provided
         if puzzle_size is None:
             channel_name = interaction.channel.name if hasattr(interaction.channel, 'name') else ""
             puzzle_size = get_puzzle_size_from_channel(channel_name)
         
-        if power_system not in ["modern", "classic", "fmc"]:
-            await interaction.followup.send("Power system must be: modern, classic, or fmc", ephemeral=True)
-            return
+        display_id, display_name = validate_and_get_display(display_type)
+        control_id, control_name = validate_and_get_control(control_type)
+        pb_id = validate_and_get_pb(pb_type)
         
-        result = stats.get_pb(username, puzzle_size, power_system)
+        result = stats.get_pb(username, puzzle_size.lower(), power_system.lower(), display_type.lower(), control_type.lower(), pb_type.lower())
         
-        if len(result) > 1900:
-            # Split into chunks if too long
-            chunks = [result[i:i+1900] for i in range(0, len(result), 1900)]
-            await interaction.followup.send(f"```\n{chunks[0]}\n```")
-            for chunk in chunks[1:]:
-                await interaction.followup.send(f"```\n{chunk}\n```")
-        else:
-            await interaction.followup.send(f"```\n{result}\n```")
+        # wrap result in code block
+        lines = result.strip().split('\n')
+        title = lines[0] if lines else "personal bests"
+        details = lines[1] if len(lines) > 1 else ""
+
+        body = "\n".join(lines[2:]) if len(lines) > 2 else ""
+        body = re.sub(r' {2,}', ' ', body)
+        
+        # send everything in one code block
+        output = f"**{title}**\n_{details}_\n```\n{body if body else 'no data'}\n```"
+        
+        await interaction.followup.send(content=output)
     
+    except ValueError as e:
+        await interaction.followup.send(str(e), ephemeral=True)
     except Exception as e:
-        await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+        await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
 
 
-@client.tree.command(description="Get power ranking for a player")
+@client.tree.command(description="get power ranking for a player")
 @app_commands.describe(
-    username="Player name (or part of it) - defaults to your Discord display name",
-    power_system="Power system: modern, classic, or fmc"
+    username="player name (or part of it) - defaults to your discord display name",
+    power_system="power system: modern, classic, or fmc",
+    display_type="display type for filtering scores",
+    control_type="control type for filtering scores",
+    pb_type="pb type for power calculation"
 )
-async def rank(interaction: discord.Interaction, username: str = None, power_system: str = "modern"):
-    """Get power ranking info for a player"""
+@app_commands.choices(power_system=[
+    app_commands.Choice(name="modern", value="modern"),
+    app_commands.Choice(name="classic", value="classic"),
+    app_commands.Choice(name="fmc", value="fmc")
+])
+@app_commands.autocomplete(display_type=display_type_autocomplete)
+@app_commands.autocomplete(control_type=control_type_autocomplete)
+@app_commands.autocomplete(pb_type=pb_type_autocomplete)
+async def rank(
+    interaction: discord.Interaction, 
+    username: str = None, 
+    power_system: str = "modern", 
+    display_type: str = "standard", 
+    control_type: str = "unique", 
+    pb_type: str = "time"
+):
+    """get power ranking info for a player"""
     await interaction.response.defer(ephemeral=False)
     
     try:
-        
-        # Use caller's display name if username not provided
         if username is None:
             username = interaction.user.display_name
         
-        if power_system not in ["modern", "classic", "fmc"]:
-            await interaction.followup.send("Power system must be: modern, classic, or fmc", ephemeral=True)
-            return
+        display_id, display_name = validate_and_get_display(display_type)
+        control_id, control_name = validate_and_get_control(control_type)
+        pb_id = validate_and_get_pb(pb_type)
         
-        result = stats.get_rank(username, power_system)
-        await interaction.followup.send(result)
+        result = stats.get_rank(username, power_system.lower(), display_type.lower(), control_type.lower(), pb_type.lower())
+        
+        # wrap result in code block
+        lines = result.strip().split('\n')
+        main_line = lines[0] if lines else "no rank data"
+        
+        output = f"```\n{main_line}\n```\n_{display_name} | {control_name} | {power_system.lower()}_"
+        
+        await interaction.followup.send(content=output)
     
+    except ValueError as e:
+        await interaction.followup.send(str(e), ephemeral=True)
     except Exception as e:
-        await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+        await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
 
 
-@client.tree.command(description="Get tier requirements for a puzzle size")
+@client.tree.command(description="get tier requirements for a puzzle size")
 @app_commands.describe(
-    tier_name="Tier name (e.g., 'Grandmaster', 'Ascended', 'Gold I')",
-    power_system="Power system: modern, classic, or fmc",
-    puzzle_size="Puzzle size in NxM format (e.g., 4x4) - defaults to channel name or 4x4"
+    tier_name="tier name (e.g., 'grandmaster', 'ascended', 'gold i')",
+    power_system="power system: modern, classic, or fmc",
+    puzzle_size="puzzle size in nxm format (e.g., 4x4) - defaults to channel name or 4x4"
 )
-async def getreq(interaction: discord.Interaction, tier_name: str, power_system: str = "modern", puzzle_size: str = None):
-    """Get the time/move requirements for a specific tier on a puzzle size"""
+@app_commands.choices(power_system=[
+    app_commands.Choice(name="modern", value="modern"),
+    app_commands.Choice(name="classic", value="classic"),
+    app_commands.Choice(name="fmc", value="fmc")
+])
+async def getreq(
+    interaction: discord.Interaction, 
+    tier_name: str, 
+    power_system: str = "modern", 
+    puzzle_size: str = None
+):
+    """get the time/move requirements for a specific tier on a puzzle size"""
     await interaction.response.defer(ephemeral=False)
     
     try:
-        
-        # Use channel name to determine puzzle size if not provided
         if puzzle_size is None:
             channel_name = interaction.channel.name if hasattr(interaction.channel, 'name') else ""
             puzzle_size = get_puzzle_size_from_channel(channel_name)
         
-        if power_system not in ["modern", "classic", "fmc"]:
-            await interaction.followup.send("Power system must be: modern, classic, or fmc", ephemeral=True)
-            return
+        result = stats.get_req(tier_name.lower(), power_system.lower(), puzzle_size.lower())
         
-        result = stats.get_req(tier_name, power_system, puzzle_size)
+        output = f"```\n{result}\n```\n_{power_system.lower()} | {puzzle_size}_"
         
-        if len(result) > 1900:
-            chunks = [result[i:i+1900] for i in range(0, len(result), 1900)]
-            await interaction.followup.send(f"```\n{chunks[0]}\n```")
-            for chunk in chunks[1:]:
-                await interaction.followup.send(f"```\n{chunk}\n```")
-        else:
-            await interaction.followup.send(f"```\n{result}\n```")
+        await interaction.followup.send(content=output)
     
     except Exception as e:
-        await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+        await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
 
 @client.tree.command(description="Update web backup by running updateweb.py script")
 async def updateweb(interaction: discord.Interaction):

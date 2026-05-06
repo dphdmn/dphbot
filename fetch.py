@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-fetch_and_merge.py
+fetch.py
 
 Usage: python fetch_and_merge.py <displayType> <controlType> <pbType>
 
@@ -13,36 +13,7 @@ import json
 import requests
 import lzma
 import io
-
-# ---------- constants from the JS code ----------
-BASE_URL = "https://91.184.253.245.nip.io"
-GUEST_TOKEN = "Basic R3Vlc3Q6NGJvaHBwNzd6Y2N4aXJ6eDljdmhiaw=="
-
-# numeric -> string maps (reversed)
-DISPLAY_TYPE_MAP = {
-    1: "Adjacent sum", 2: "Adjacent tiles", 3: "Chess", 4: "Fading tiles",
-    5: "Fringe minimal", 6: "Incremental vectors", 7: "Inverse permutation",
-    8: "Inverse vectors", 9: "Last move", 10: "Manhattan", 11: "Maximal unsolved",
-    12: "Minesweeper", 13: "Minimal", 14: "Minimal unsolved", 15: "RGB",
-    16: "Row minimal", 17: "Rows and columns", 18: "Standard",
-    19: "Vanish on solved", 20: "Vectors", 21: "Cyclic", 22: "Divisible",
-    23: "Vertical multi-tile", 24: "Rows", 25: "Square fringe",
-    26: "Split square fringe", 27: "Checkerboard"
-}
-PB_TYPE_MAP = {1: "time", 2: "move", 3: "tps", 4: "FMC", 5: "FMC MTM"}
-CONTROL_TYPE_MAP = {
-    0: "Keyboard", 1: "Mouse", 2: "both", 3: "unique", 4: "Click", 5: "Touch"
-}
-SOLVE_TYPE_MAP = {
-    1: "Standard", 2: "2-N relay", 3: "BLD", 4: "Everything-up-to relay",
-    5: "Height relay", 6: "Width relay"
-}
-RENAME_MAP = {
-    'ivy': 'daanbe', 'skye': 'iota', 'eggben': 'ben1996123', 'eskiu': 'sq',
-    'HashPanda': 'Rafael', 'wiser': 'wiserboblouis', 'garyx': 'gr21xx',
-    'ekimmy': 'ekim', 'ap_web': 'ap', 'juunas': 'asdfghqwerty',
-    'minsie': 'MegaminX', '554': 'yzx'
-}
+from power_data import *
 
 # ---------- helper functions ----------
 
@@ -192,6 +163,10 @@ def merge_web_pbs(live_data, web_data):
 # ---------- main fetching functions ----------
 
 def fetch_live_scores(display_type, control_type, pb_type):
+    if (control_type > 3):
+        return ""
+    if (pb_type > 3):
+        return ""
     """POST to the live API and return the raw text response."""
     url = f"{BASE_URL}/api/getScores"
     payload = {
@@ -204,6 +179,7 @@ def fetch_live_scores(display_type, control_type, pb_type):
         "Content-Type": "application/json"
     }
     resp = requests.post(url, json=payload, headers=headers)
+    print(display_type, control_type)
     resp.raise_for_status()
     return resp.text
 
