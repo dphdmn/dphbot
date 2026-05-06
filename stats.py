@@ -2,6 +2,7 @@ import subprocess
 import sys
 import json
 import math
+from datetime import datetime
 from power_data import *
 
 # ====================== HELPER: Run power.py ======================
@@ -117,6 +118,13 @@ def format_score(ms, score_type="time"):
         else:
             return f"{seconds:.3f}"
 
+def format_date(timestamp_ms):
+    """Convert millisecond timestamp to DD.MM.YYYY format."""
+    if timestamp_ms is None:
+        return "Unknown"
+    dt = datetime.fromtimestamp(timestamp_ms / 1000.0)
+    return dt.strftime("%d.%m.%Y")
+
 def find_player_in_power(power_data, username_substring):
     for row in power_data:
         if username_substring.lower() in row[0].lower():
@@ -156,20 +164,21 @@ def get_best_scores_for_user(merged_data, username):
     return best
 
 def get_category_id(width, height, gameMode, avglen):
+    """Get category ID string (without puzzle prefix for alignment)."""
     if gameMode == "Standard":
         if avglen == 1:
-            return f"{width}x{height} single"
+            return "single"
         else:
-            return f"{width}x{height} ao{avglen}"
+            return f"ao{avglen}"
     elif gameMode.startswith("Marathon"):
         num = gameMode.split(" ")[1]
-        return f"{width}x{height} x{num}"
+        return f"x{num}"
     elif gameMode == "2-N relay":
-        return f"{width}x{height} relay"
+        return "relay"
     elif gameMode == "Everything-up-to relay":
-        return f"{width}x{height} eut"
+        return "eut"
     else:
-        return f"{width}x{height} {gameMode}"
+        return gameMode
 
 def get_all_categories_for_puzzle(N, M):
     categories = []
@@ -180,6 +189,33 @@ def get_all_categories_for_puzzle(N, M):
     categories.append((get_category_id(N, M, "2-N relay", 1), "2-N relay", 1))
     categories.append((get_category_id(N, M, "Everything-up-to relay", 1), "Everything-up-to relay", 1))
     return categories
+
+def get_max_category_width():
+    """Get the maximum width needed for category alignment."""
+    cats = ["single", "ao5", "ao12", "ao25", "ao50", "ao100", 
+            "x10", "x25", "x42", "x50", "x100", "relay", "eut"]
+    return max(len(c) for c in cats)+1
+
+def format_aligned_line(puzzle_str, cat_id, value_str, holder_name="", date_str="", tier_annotation=""):
+    """Format a line with proper alignment between puzzle size and category."""
+    max_puzzle_width = len(puzzle_str)
+    max_cat_width = get_max_category_width()
+    
+    puzzle_padded = puzzle_str.ljust(max_puzzle_width)
+    cat_padded = cat_id.ljust(max_cat_width)
+    
+    line = f"{puzzle_padded} {cat_padded}: {value_str}"
+    
+    if holder_name:
+        line += f" by {holder_name}"
+    
+    if date_str and date_str != "Unknown":
+        line += f" [{date_str}]"
+    
+    if tier_annotation:
+        line += tier_annotation
+    
+    return line
 
 # ====================== FUNCTION: getPB ======================
 def get_pb(username_substring, puzzle_size, power_system="modern", display_type="Standard", control_type="unique", pb_type="time"):
@@ -241,7 +277,9 @@ def get_pb(username_substring, puzzle_size, power_system="modern", display_type=
         def format_secondary(score):
             return ""
     
+    puzzle_str = f"{N}x{M}"
     lines = []
+    
     for cat_id, gameMode, avglen in all_cats:
         key = (N, M, gameMode, avglen)
         if key not in best_scores:
@@ -252,6 +290,9 @@ def get_pb(username_substring, puzzle_size, power_system="modern", display_type=
         primary_str = format_primary(primary_val)
         secondary_str = format_secondary(score)
         value_str = f"{primary_str} {secondary_str}".strip()
+        
+        # Get date
+        date_str = format_date(score.get('timestamp'))
         
         # Add tier annotation for time pb_type on classic/modern systems
         # OR for move pb_type on fmc system
@@ -274,13 +315,13 @@ def get_pb(username_substring, puzzle_size, power_system="modern", display_type=
                             tier_annotation += f"({next_tier['name']}={next_req_str})"
                     break
         
-        line = f"{cat_id}: {value_str}{tier_annotation}"
+        line = format_aligned_line(puzzle_str, cat_id, value_str, date_str=date_str, tier_annotation=tier_annotation)
         lines.append(line)
     
     if not lines:
         return f"No {pb_type} PBs found for {player_name} on {puzzle_size}."
     
-    header = f"{N}x{M} {pb_type.upper()} PBs for {player_name}"
+    header = f"{puzzle_str} {pb_type.upper()} PBs for {player_name}"
     info_line = f"[Display: {display_name} | Control: {control_name} | Power: {power_system.capitalize()}]"
     return header + "\n" + info_line + "\n" + "\n".join(lines)
 
@@ -303,7 +344,7 @@ def get_wr(puzzle_size, power_system="modern", display_type="Standard", control_
     # The same category list as in get_pb
     all_cats = get_all_categories_for_puzzle(N, M)
 
-    # Same format helpers (could be shared, but copying for clarity)
+    # Same format helpers
     if pb_type == "time" or pb_type == "fmc" or pb_type == "fmc mtm":
         def get_primary(score):
             return score['time']
@@ -347,7 +388,9 @@ def get_wr(puzzle_size, power_system="modern", display_type="Standard", control_
         def format_secondary(score):
             return ""
 
+    puzzle_str = f"{N}x{M}"
     lines = []
+    
     for cat_id, gameMode, avglen in all_cats:
         # Filter all scores for this category
         relevant = [s for s in merged_data if s['width'] == N and s['height'] == M and s['gameMode'] == gameMode and s['avglen'] == avglen]
@@ -372,8 +415,10 @@ def get_wr(puzzle_size, power_system="modern", display_type="Standard", control_
         secondary_str = format_secondary(best_score)
         value_str = f"{primary_str} {secondary_str}".strip()
 
-        # Add holder's name
+        # Add holder's name and date
         holder_name = best_score.get('nameFilter', 'Unknown')
+        date_str = format_date(best_score.get('timestamp'))
+        
         # Tier annotation (same logic as get_pb)
         tier_annotation = ""
         if (pb_type == "time" and power_system in ["classic", "modern"]) or \
@@ -394,15 +439,182 @@ def get_wr(puzzle_size, power_system="modern", display_type="Standard", control_
                             tier_annotation += f"({next_tier['name']}={next_req_str})"
                     break
 
-        line = f"{cat_id}: {value_str} by {holder_name}{tier_annotation}"
+        line = format_aligned_line(puzzle_str, cat_id, value_str, holder_name, date_str, tier_annotation)
         lines.append(line)
 
     if not lines:
         return f"No world records found for {puzzle_size} in {pb_type}."
 
-    header = f"{N}x{M} {pb_type.upper()} World Records"
+    header = f"{puzzle_str} {pb_type.upper()} World Records"
     info_line = f"[Display: {display_name} | Control: {control_name} | Power: {power_system.capitalize()}]"
     return header + "\n" + info_line + "\n" + "\n".join(lines)
+
+
+# ====================== FUNCTION: numwrs ======================
+def numwrs(display_type="Standard", control_type="unique", pb_type="time", 
+           filter_type="NxM singles", relay_type="Standard", power_system="modern"):
+    """
+    Count world records per player.
+    
+    Args:
+        display_type, control_type, pb_type: Standard filters
+        filter_type: "NxM singles" (default) - only singles (avglen==1), any NxM
+                     "Square averages" - only NxN puzzles, any avglen
+        relay_type: Filter by gameMode (default "Standard" from SOLVE_TYPE_MAP)
+        power_system: Power system to use
+    """
+    # Normalize pb_type
+    if pb_type.lower() == "moves":
+        pb_type = "move"
+    if pb_type == "move":
+        power_system = "fmc"
+    elif power_system == "fmc" and pb_type not in ["move", "fmc", "fmc mtm"]:
+        pb_type = "move"
+    
+    power_data, merged_data, display_name, control_name = _run_power(power_system, display_type, control_type, pb_type)
+    
+    # Convert relay_type to gameMode string
+    game_mode_filter = None
+    if relay_type is not None:
+        relay_lower = str(relay_type).lower().strip()
+        # Try exact match first
+        for id_, name in SOLVE_TYPE_MAP.items():
+            if name.lower().strip() == relay_lower:
+                game_mode_filter = name
+                break
+        # Try substring match
+        if game_mode_filter is None:
+            for id_, name in SOLVE_TYPE_MAP.items():
+                if relay_lower in name.lower().strip():
+                    game_mode_filter = name
+                    break
+    
+    # Define comparison functions based on pb_type
+    if pb_type == "time" or pb_type == "fmc" or pb_type == "fmc mtm":
+        def get_primary(score):
+            return score['time']
+        def is_better(new_val, old_val):
+            return new_val < old_val
+        def is_invalid_score(val):
+            return val == 0 or val == -1 or val is None
+    elif pb_type == "move":
+        def get_primary(score):
+            return score['moves']
+        def is_better(new_val, old_val):
+            return new_val < old_val
+        def is_invalid_score(val):
+            return val == 1000 or val == 0 or val == -1 or val is None
+    elif pb_type == "tps":
+        def get_primary(score):
+            return score['tps']
+        def is_better(new_val, old_val):
+            return new_val > old_val
+        def is_invalid_score(val):
+            return val == 0 or val == -1 or val is None
+    
+    # First, group ALL scores by category
+    all_categories = {}
+    for score in merged_data:
+        key = (score['width'], score['height'], score['gameMode'], score['avglen'])
+        if key not in all_categories:
+            all_categories[key] = []
+        all_categories[key].append(score)
+    
+    # Filter out 2x2 puzzles completely
+    all_categories = {k: v for k, v in all_categories.items() if not (k[0] == 2 and k[1] == 2)}
+    
+    # Filter out categories that have ANY 0.000s or 1 move record
+    valid_categories = {}
+    for key, scores in all_categories.items():
+        has_invalid = False
+        for score in scores:
+            val = get_primary(score)
+            if is_invalid_score(val):
+                has_invalid = True
+                break
+        
+        if not has_invalid:
+            valid_categories[key] = scores
+    
+    # Apply filter_type
+    filter_type_lower = filter_type.lower().strip()
+    if filter_type_lower == "nxm singles":
+        # Only singles (avglen==1), any puzzle size
+        valid_categories = {k: v for k, v in valid_categories.items() if k[3] == 1}
+    elif filter_type_lower == "square averages":
+        # Only NxN puzzles (width == height), any avglen
+        valid_categories = {k: v for k, v in valid_categories.items() if k[0] == k[1]}
+    
+    # Apply relay_type filter
+    if game_mode_filter:
+        valid_categories = {k: v for k, v in valid_categories.items() if k[2] == game_mode_filter}
+    
+    # Now find the best score per category (earliest timestamp wins ties)
+    category_best = {}
+    for key, scores in valid_categories.items():
+        best_score = None
+        best_val = None
+        best_ts = float('inf')
+        
+        for score in scores:
+            val = get_primary(score)
+            if val is None or val == -1:
+                continue
+            
+            timestamp = score.get('timestamp', float('inf'))
+            
+            if best_score is None:
+                best_score = score
+                best_val = val
+                best_ts = timestamp
+            elif is_better(val, best_val):
+                best_score = score
+                best_val = val
+                best_ts = timestamp
+            elif val == best_val and timestamp < best_ts:
+                # Tied value, earlier timestamp wins
+                best_score = score
+                best_val = val
+                best_ts = timestamp
+        
+        if best_score is not None:
+            category_best[key] = (best_score, best_val, best_ts)
+    
+    # Count WRs per player
+    player_wrs = {}
+    for key, (score, val, timestamp) in category_best.items():
+        player_name = score.get('nameFilter', 'Unknown')
+        player_wrs[player_name] = player_wrs.get(player_name, 0) + 1
+    
+    # Sort by count (descending), then alphabetically
+    sorted_players = sorted(player_wrs.items(), key=lambda x: (-x[1], x[0]))
+    
+       # Format output
+    lines = []
+    max_name_len = max(len(name) for name, _ in sorted_players) if sorted_players else 15
+    max_name_len = max(max_name_len, 8)
+    
+    for player_name, wr_count in sorted_players:
+        padded_name = player_name.ljust(max_name_len + 2)
+        lines.append(f"{padded_name}: {wr_count}")
+    
+    # Add total count
+    total_wrs = sum(count for _, count in sorted_players)
+    lines.append("─" * (max_name_len + 10))
+    lines.append(f"{'Total'.ljust(max_name_len + 2)}: {total_wrs}")
+    
+    if not lines:
+        return f"No world records found for the given filters.\n[Display: {display_name} | Control: {control_name} | PB: {pb_type} | Power: {power_system.capitalize()}]\n[Filter: {filter_type} | Relay: {relay_type}]"
+    
+    filter_desc = f"Filter: {filter_type}"
+    if game_mode_filter:
+        filter_desc += f" | Relay: {game_mode_filter}"
+    
+    header = f"World Record Counts"
+    info_line = f"[Display: {display_name} | Control: {control_name} | PB: {pb_type}]"
+    filter_line = f"[{filter_desc}]"
+    
+    return header + "\n" + "\n".join(lines) + "\n" + info_line + "\n" + filter_line
 
 
 # ====================== FUNCTION: rank ======================
@@ -476,10 +688,14 @@ def get_req(tier_substring, power_system, puzzle_size):
     if not matched_tiers:
         return f"No tier matching '{tier_substring}' found in {power_system}."
     
+    puzzle_str = f"{N}x{M}"
     lines = []
+    
     for cat in categories:
         if cat['width'] == N and cat['height'] == M:
             cat_idx = categories.index(cat)
+            cat_id = cat['id'].split(' ', 1)[1] if ' ' in cat['id'] else cat['id']
+            
             reqs = []
             for t in matched_tiers:
                 req_val = t['times'][cat_idx]
@@ -488,14 +704,15 @@ def get_req(tier_substring, power_system, puzzle_size):
                 else:
                     req_str = format_score(req_val, "time")
                 reqs.append(req_str)
-            line = f"{cat['id']}: {' '.join(reqs)}"
+            
+            line = format_aligned_line(puzzle_str, cat_id, ' '.join(reqs))
             lines.append(line)
     
     if not lines:
         return f"No categories found for {puzzle_size} in {power_system}."
     
     tier_names = " ".join(t['name'] for t in matched_tiers)
-    header = f"Requirements for {tier_names} {N}x{M}"
+    header = f"Requirements for {tier_names} {puzzle_str}"
     return header + "\n" + "\n".join(lines)
 
 # ====================== CLI ======================
@@ -525,6 +742,17 @@ if __name__ == "__main__":
         control = sys.argv[5] if len(sys.argv) > 5 else "unique"
         pb = sys.argv[6] if len(sys.argv) > 6 else "time"
         print(get_wr(puzzle, power, display, control, pb))
+    elif cmd == "numwrs":
+        if len(sys.argv) < 2:
+            print("Usage: python stats.py numwrs [displayType=Standard] [controlType=unique] [pbType=time] [filterType=NxM singles] [relayType=Standard] [powerSystem=modern]")
+            sys.exit(1)
+        display = sys.argv[2] if len(sys.argv) > 2 else "Standard"
+        control = sys.argv[3] if len(sys.argv) > 3 else "unique"
+        pb = sys.argv[4] if len(sys.argv) > 4 else "time"
+        filter_type = sys.argv[5] if len(sys.argv) > 5 else "NxM singles"
+        relay = sys.argv[6] if len(sys.argv) > 6 else "Standard"
+        power = sys.argv[7] if len(sys.argv) > 7 else "modern"
+        print(numwrs(display, control, pb, filter_type, relay, power))
     elif cmd == "rank":
         if len(sys.argv) < 3:
             print("Usage: python stats.py rank <username> [powerSystem=modern] [displayType=Standard] [controlType=unique] [pbType=time]")
@@ -544,4 +772,4 @@ if __name__ == "__main__":
         puzzle = sys.argv[4]
         print(get_req(tiername, power, puzzle))
     else:
-        print("Unknown command. Use getpb, getwr, rank, or getreq.")
+        print("Unknown command. Use getpb, getwr, numwrs, rank, or getreq.")

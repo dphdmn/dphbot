@@ -17,7 +17,7 @@ import subprocess
 import asyncio
 import stats
 from discord import app_commands
-from power_data import DISPLAY_TYPE_MAP, CONTROL_TYPE_MAP, PB_TYPE_MAP
+from power_data import DISPLAY_TYPE_MAP, CONTROL_TYPE_MAP, PB_TYPE_MAP, SOLVE_TYPE_MAP
 import re
 
 
@@ -265,7 +265,6 @@ async def getpb(
         details = lines[1] if len(lines) > 1 else ""
 
         body = "\n".join(lines[2:]) if len(lines) > 2 else ""
-        body = re.sub(r' {2,}', ' ', body)
         
         # send everything in one code block
         output = f"**{title}**\n_{details}_\n```\n{body if body else 'no data'}\n```"
@@ -321,7 +320,6 @@ async def getwr(
         details = lines[1] if len(lines) > 1 else ""
 
         body = "\n".join(lines[2:]) if len(lines) > 2 else ""
-        body = re.sub(r' {2,}', ' ', body)
         
         # send everything in one code block
         output = f"**{title}**\n_{details}_\n```\n{body if body else 'no data'}\n```"
@@ -415,6 +413,99 @@ async def getreq(
         
         await interaction.followup.send(content=output)
     
+    except Exception as e:
+        await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
+
+# ====================== NUMWRS AUTOCOMPLETE HELPERS ======================
+
+async def filter_type_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    """autocomplete for numwrs filter types"""
+    filter_types = ["NxM singles", "Square averages"]
+    choices = []
+    for name in filter_types:
+        if current.lower() in name.lower():
+            choices.append(app_commands.Choice(name=name, value=name))
+    return choices[:25]
+
+
+async def relay_type_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    """autocomplete for relay/gameMode types"""
+    choices = []
+    for name in SOLVE_TYPE_MAP.values():
+        if current.lower() in name.lower():
+            choices.append(app_commands.Choice(name=name, value=name))
+    return choices[:25]
+
+
+# ====================== NUMWRS COMMAND ======================
+
+@client.tree.command(description="count world records per player with filters")
+@app_commands.describe(
+    display_type="display type for filtering scores",
+    control_type="control type for filtering scores",
+    pb_type="pb type for comparison (time, move, tps)",
+    filter_type="'NxM singles' (default, avglen=1 any size) or 'Square averages' (NxN puzzles only)",
+    relay_type="filter by game mode (default: Standard)",
+    power_system="power system: modern, classic, or fmc"
+)
+@app_commands.choices(power_system=[
+    app_commands.Choice(name="modern", value="modern"),
+    app_commands.Choice(name="classic", value="classic"),
+    app_commands.Choice(name="fmc", value="fmc")
+])
+@app_commands.autocomplete(display_type=display_type_autocomplete)
+@app_commands.autocomplete(control_type=control_type_autocomplete)
+@app_commands.autocomplete(pb_type=pb_type_autocomplete)
+@app_commands.autocomplete(filter_type=filter_type_autocomplete)
+@app_commands.autocomplete(relay_type=relay_type_autocomplete)
+async def numwrs(
+    interaction: discord.Interaction,
+    display_type: str = "standard",
+    control_type: str = "unique",
+    pb_type: str = "time",
+    filter_type: str = "NxM singles",
+    relay_type: str = "Standard",
+    power_system: str = "modern"
+):
+    """count world records per player with optional filters for relay type and category type"""
+    await interaction.response.defer(ephemeral=False)
+    
+    try:
+        result = stats.numwrs(
+            display_type=display_type,
+            control_type=control_type,
+            pb_type=pb_type,
+            filter_type=filter_type,
+            relay_type=relay_type,
+            power_system=power_system
+        )
+        
+        # Parse the result - no more table borders, just clean text
+        lines = result.strip().split('\n')
+        
+        header = lines[0] if lines else "World Record Counts"
+        body_lines = []
+        info_parts = []
+        
+        for line in lines[1:]:
+            stripped = line.strip()
+            if stripped.startswith("[Display:") or stripped.startswith("[Filter:"):
+                info_parts.append(stripped)
+            elif stripped:
+                body_lines.append(stripped)
+        
+        body = "\n".join(body_lines) if body_lines else "no world records found"
+        info = "\n".join(info_parts) if info_parts else ""
+        
+        # Build clean output
+        output = f"**{header}**\n```\n{body}\n```"
+        if info:
+            output += f"\n_{info}_"
+        
+        await interaction.followup.send(content=output)
+    
+    except ValueError as e:
+        await interaction.followup.send(str(e), ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
 
