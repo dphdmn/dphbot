@@ -136,43 +136,115 @@ client = MyClient()
 # Add this global variable near the top of your file with other globals
 updateweb_running = False
 
-def get_puzzle_size_from_channel(channel_name: str) -> str:
-    """extract puzzle size from channel name if it matches nxm format"""
-    import re
-    match = re.search(r'(\d+x\d+)', channel_name, re.IGNORECASE)
-    if match:
-        return match.group(1).lower()
-    return "4x4"
+# ======================== PARSE RELAY TYPE ========================
 
+def parse_relay_type(raw: str) -> str:
+    """Convert user input to a canonical gameMode name (e.g. 'rel' -> '2-N relay',
+    'x10' -> 'Marathon 10')."""
+    raw = raw.strip()
+    raw_lower = raw.lower()
 
-# helper function for autocomplete
-async def display_type_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-    """autocomplete for display types"""
+    # Marathon patterns: "x<num>" or "Marathon <num>"
+    m = re.match(r'^x(\d+)$', raw_lower)
+    if m:
+        return f"Marathon {m.group(1)}"
+    m = re.match(r'^marathon\s*(\d+)$', raw_lower)
+    if m:
+        return f"Marathon {m.group(1)}"
+
+    # Aliases for well‑known relay types
+    alias_map = {
+        "rel": "2-N relay",
+        "relay": "2-N relay",
+        "eut": "Everything-up-to relay",
+        "everything": "Everything-up-to relay",
+        "everything-up-to": "Everything-up-to relay",
+        "width": "Width relay",
+        "wrel": "Width relay",
+        "height": "Height relay",
+        "hrel": "Height relay",
+        "bld": "BLD",
+        "blindfolded": "BLD",
+    }
+    # exact alias
+    if raw_lower in alias_map:
+        return alias_map[raw_lower]
+
+    # partial match against SOLVE_TYPE_MAP values (case‑insensitive)
+    for name in SOLVE_TYPE_MAP.values():
+        if raw_lower in name.lower():
+            return name
+    # also try if the name is inside the input
+    for name in SOLVE_TYPE_MAP.values():
+        if name.lower() in raw_lower:
+            return name
+
+    # last resort: check for "standard"
+    if raw_lower == "standard":
+        return "Standard"
+
+    raise ValueError(f"Unknown relay type: '{raw}'. Accepted: Standard, 2-N relay, "
+                     "Everything-up-to relay, Width relay, Height relay, BLD, "
+                     "Marathon N, xN, rel, eut, width, etc.")
+
+# ======================== AUTOCOMPLETE ========================
+
+async def display_type_autocomplete(interaction, current):
     choices = []
     for name in DISPLAY_TYPE_MAP.values():
         if current.lower() in name.lower():
             choices.append(app_commands.Choice(name=name, value=name))
     return choices[:25]
 
-async def control_type_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-    """autocomplete for control types"""
+async def control_type_autocomplete(interaction, current):
     choices = []
     for name in CONTROL_TYPE_MAP.values():
         if current.lower() in name.lower():
             choices.append(app_commands.Choice(name=name, value=name))
     return choices[:25]
 
-async def pb_type_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-    """autocomplete for pb types"""
+async def pb_type_autocomplete(interaction, current):
     choices = []
     for name in PB_TYPE_MAP.values():
         if current.lower() in name.lower():
             choices.append(app_commands.Choice(name=name, value=name))
     return choices[:25]
 
+async def filter_type_autocomplete(interaction, current):
+    filter_types = ["NxM singles", "Square averages"]
+    return [app_commands.Choice(name=n, value=n) for n in filter_types if current.lower() in n.lower()][:25]
+
+async def relay_type_autocomplete(interaction, current):
+    """autocomplete for relay/gameMode, including marathons and aliases."""
+    # canonical names from SOLVE_TYPE_MAP
+    suggestions = list(SOLVE_TYPE_MAP.values())
+    # common marathon values
+    marathon_samples = ["Marathon 10", "Marathon 25", "Marathon 42", "Marathon 50", "Marathon 100"]
+    suggestions.extend(marathon_samples)
+    # aliases shown as hints
+    aliases = ["x10", "x25", "x42", "x50", "x100", "rel", "eut", "width", "height", "bld", "blindfolded"]
+    suggestions.extend(aliases)
+
+    current_lower = current.lower()
+    filtered = []
+    seen = set()
+    for s in suggestions:
+        if current_lower in s.lower() and s.lower() not in seen:
+            filtered.append(app_commands.Choice(name=s, value=s))
+            seen.add(s.lower())
+    return filtered[:25]
+
+async def avglen_autocomplete(interaction, current):
+    options = ["single", "ao5", "ao12", "ao25", "ao50", "ao100"]
+    return [app_commands.Choice(name=o, value=o) for o in options if current.lower() in o.lower()][:25]
+
+def get_puzzle_size_from_channel(channel_name: str) -> str:
+    match = re.search(r'(\d+x\d+)', channel_name, re.IGNORECASE)
+    if match:
+        return match.group(1).lower()
+    return "4x4"
 
 def validate_and_get_display(display_type: str):
-    """validate display_type case-insensitively, returns (id, name)"""
     display_lower = display_type.lower().strip()
     for id_, name in DISPLAY_TYPE_MAP.items():
         if name.lower().strip() == display_lower:
@@ -184,7 +256,6 @@ def validate_and_get_display(display_type: str):
     raise ValueError(f"unknown display_type: '{display_type}'. available: {available}")
 
 def validate_and_get_control(control_type: str):
-    """validate control_type case-insensitively, returns (id, name)"""
     control_lower = control_type.lower().strip()
     for id_, name in CONTROL_TYPE_MAP.items():
         if name.lower().strip() == control_lower:
@@ -196,12 +267,10 @@ def validate_and_get_control(control_type: str):
     raise ValueError(f"unknown control_type: '{control_type}'. available: {available}")
 
 def validate_and_get_pb(pb_type: str):
-    """validate pb_type case-insensitively, returns id"""
     pb_lower = pb_type.lower().strip()
     for id_, name in PB_TYPE_MAP.items():
         if name.lower().strip() == pb_lower:
             return id_
-    # try singular/plural variations
     if pb_lower.endswith('s'):
         pb_singular = pb_lower[:-1]
         for id_, name in PB_TYPE_MAP.items():
@@ -215,6 +284,7 @@ def validate_and_get_pb(pb_type: str):
     available = ", ".join(PB_TYPE_MAP.values())
     raise ValueError(f"unknown pb_type: '{pb_type}'. available: {available}")
 
+# ======================== COMMANDS ========================
 
 @client.tree.command(description="get personal bests for a puzzle size")
 @app_commands.describe(
@@ -234,43 +304,34 @@ def validate_and_get_pb(pb_type: str):
 @app_commands.autocomplete(control_type=control_type_autocomplete)
 @app_commands.autocomplete(pb_type=pb_type_autocomplete)
 async def getpb(
-    interaction: discord.Interaction, 
-    username: str = None, 
-    puzzle_size: str = None, 
-    power_system: str = "modern", 
-    display_type: str = "standard", 
-    control_type: str = "unique", 
+    interaction: discord.Interaction,
+    username: str = None,
+    puzzle_size: str = None,
+    power_system: str = "modern",
+    display_type: str = "standard",
+    control_type: str = "unique",
     pb_type: str = "time"
 ):
-    """get personal bests for a player on a specific puzzle size"""
     await interaction.response.defer(ephemeral=False)
-    
     try:
         if username is None:
             username = interaction.user.display_name
-        
         if puzzle_size is None:
             channel_name = interaction.channel.name if hasattr(interaction.channel, 'name') else ""
             puzzle_size = get_puzzle_size_from_channel(channel_name)
-        
+
         display_id, display_name = validate_and_get_display(display_type)
         control_id, control_name = validate_and_get_control(control_type)
         pb_id = validate_and_get_pb(pb_type)
-        
-        result = stats.get_pb(username, puzzle_size.lower(), power_system.lower(), display_type.lower(), control_type.lower(), pb_type.lower())
-        
-        # wrap result in code block
+
+        result = stats.get_pb(username, puzzle_size.lower(), power_system.lower(),
+                              display_type.lower(), control_type.lower(), pb_type.lower())
         lines = result.strip().split('\n')
         title = lines[0] if lines else "personal bests"
         details = lines[1] if len(lines) > 1 else ""
-
         body = "\n".join(lines[2:]) if len(lines) > 2 else ""
-        
-        # send everything in one code block
         output = f"**{title}**\n_{details}_\n```\n{body if body else 'no data'}\n```"
-        
         await interaction.followup.send(content=output)
-    
     except ValueError as e:
         await interaction.followup.send(str(e), ephemeral=True)
     except Exception as e:
@@ -293,39 +354,31 @@ async def getpb(
 @app_commands.autocomplete(control_type=control_type_autocomplete)
 @app_commands.autocomplete(pb_type=pb_type_autocomplete)
 async def getwr(
-    interaction: discord.Interaction, 
-    puzzle_size: str = None, 
-    power_system: str = "modern", 
-    display_type: str = "standard", 
-    control_type: str = "unique", 
+    interaction: discord.Interaction,
+    puzzle_size: str = None,
+    power_system: str = "modern",
+    display_type: str = "standard",
+    control_type: str = "unique",
     pb_type: str = "time"
 ):
-    """get world records for a specific puzzle size"""
     await interaction.response.defer(ephemeral=False)
-    
     try:
         if puzzle_size is None:
             channel_name = interaction.channel.name if hasattr(interaction.channel, 'name') else ""
             puzzle_size = get_puzzle_size_from_channel(channel_name)
-        
+
         display_id, display_name = validate_and_get_display(display_type)
         control_id, control_name = validate_and_get_control(control_type)
         pb_id = validate_and_get_pb(pb_type)
-        
-        result = stats.get_wr(puzzle_size.lower(), power_system.lower(), display_type.lower(), control_type.lower(), pb_type.lower())
-        
-        # wrap result in code block
+
+        result = stats.get_wr(puzzle_size.lower(), power_system.lower(),
+                              display_type.lower(), control_type.lower(), pb_type.lower())
         lines = result.strip().split('\n')
         title = lines[0] if lines else "world records"
         details = lines[1] if len(lines) > 1 else ""
-
         body = "\n".join(lines[2:]) if len(lines) > 2 else ""
-        
-        # send everything in one code block
         output = f"**{title}**\n_{details}_\n```\n{body if body else 'no data'}\n```"
-        
         await interaction.followup.send(content=output)
-    
     except ValueError as e:
         await interaction.followup.send(str(e), ephemeral=True)
     except Exception as e:
@@ -348,39 +401,30 @@ async def getwr(
 @app_commands.autocomplete(control_type=control_type_autocomplete)
 @app_commands.autocomplete(pb_type=pb_type_autocomplete)
 async def rank(
-    interaction: discord.Interaction, 
-    username: str = None, 
-    power_system: str = "modern", 
-    display_type: str = "standard", 
-    control_type: str = "unique", 
+    interaction: discord.Interaction,
+    username: str = None,
+    power_system: str = "modern",
+    display_type: str = "standard",
+    control_type: str = "unique",
     pb_type: str = "time"
 ):
-    """get power ranking info for a player"""
     await interaction.response.defer(ephemeral=False)
-    
     try:
         if username is None:
             username = interaction.user.display_name
-        
         display_id, display_name = validate_and_get_display(display_type)
         control_id, control_name = validate_and_get_control(control_type)
         pb_id = validate_and_get_pb(pb_type)
-        
-        result = stats.get_rank(username, power_system.lower(), display_type.lower(), control_type.lower(), pb_type.lower())
-        
-        # wrap result in code block
+        result = stats.get_rank(username, power_system.lower(),
+                                display_type.lower(), control_type.lower(), pb_type.lower())
         lines = result.strip().split('\n')
         main_line = lines[0] if lines else "no rank data"
-        
         output = f"```\n{main_line}\n```\n_{display_name} | {control_name} | {power_system.lower()}_"
-        
         await interaction.followup.send(content=output)
-    
     except ValueError as e:
         await interaction.followup.send(str(e), ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
-
 
 @client.tree.command(description="get tier requirements for a puzzle size")
 @app_commands.describe(
@@ -394,50 +438,23 @@ async def rank(
     app_commands.Choice(name="fmc", value="fmc")
 ])
 async def getreq(
-    interaction: discord.Interaction, 
-    tier_name: str, 
-    power_system: str = "modern", 
+    interaction: discord.Interaction,
+    tier_name: str,
+    power_system: str = "modern",
     puzzle_size: str = None
 ):
-    """get the time/move requirements for a specific tier on a puzzle size"""
     await interaction.response.defer(ephemeral=False)
-    
     try:
         if puzzle_size is None:
             channel_name = interaction.channel.name if hasattr(interaction.channel, 'name') else ""
             puzzle_size = get_puzzle_size_from_channel(channel_name)
-        
         result = stats.get_req(tier_name.lower(), power_system.lower(), puzzle_size.lower())
-        
         output = f"```\n{result}\n```\n_{power_system.lower()} | {puzzle_size}_"
-        
         await interaction.followup.send(content=output)
-    
     except Exception as e:
         await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
 
-# ====================== NUMWRS AUTOCOMPLETE HELPERS ======================
-
-async def filter_type_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-    """autocomplete for numwrs filter types"""
-    filter_types = ["NxM singles", "Square averages"]
-    choices = []
-    for name in filter_types:
-        if current.lower() in name.lower():
-            choices.append(app_commands.Choice(name=name, value=name))
-    return choices[:25]
-
-
-async def relay_type_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-    """autocomplete for relay/gameMode types"""
-    choices = []
-    for name in SOLVE_TYPE_MAP.values():
-        if current.lower() in name.lower():
-            choices.append(app_commands.Choice(name=name, value=name))
-    return choices[:25]
-
-
-# ====================== NUMWRS COMMAND ======================
+# ====================== NUMWRS ======================
 
 @client.tree.command(description="count world records per player with filters")
 @app_commands.describe(
@@ -445,7 +462,7 @@ async def relay_type_autocomplete(interaction: discord.Interaction, current: str
     control_type="control type for filtering scores",
     pb_type="pb type for comparison (time, move, tps)",
     filter_type="'NxM singles' (default, avglen=1 any size) or 'Square averages' (NxN puzzles only)",
-    relay_type="filter by game mode (default: Standard)",
+    relay_type="filter by game mode (default: Standard, or Marathon 10, x10, rel, eut, width...)",
     power_system="power system: modern, classic, or fmc"
 )
 @app_commands.choices(power_system=[
@@ -467,48 +484,42 @@ async def numwrs(
     relay_type: str = "Standard",
     power_system: str = "modern"
 ):
-    """count world records per player with optional filters for relay type and category type"""
     await interaction.response.defer(ephemeral=False)
-    
     try:
+        # Parse relay_type to canonical form (support "x10", "rel", etc.)
+        canonical_relay = parse_relay_type(relay_type)
+
         result = stats.numwrs(
             display_type=display_type,
             control_type=control_type,
             pb_type=pb_type,
             filter_type=filter_type,
-            relay_type=relay_type,
+            relay_type=canonical_relay,
             power_system=power_system
         )
-        
-        # Parse the result - no more table borders, just clean text
         lines = result.strip().split('\n')
-        
         header = "World Record Counts"
         body_lines = []
         info_parts = []
-        
-        for line in lines[0:]:
+        for line in lines:
             stripped = line.strip()
             if stripped.startswith("[Display:") or stripped.startswith("[Filter:"):
                 info_parts.append(stripped)
-            elif stripped:
+            else:
                 body_lines.append(stripped)
-        
         body = "\n".join(body_lines) if body_lines else "no world records found"
         info = "\n".join(info_parts) if info_parts else ""
-        
-        # Build clean output
         output = f"**{header}**\n```\n{body}\n```"
         if info:
             output += f"\n_{info}_"
-        
         await interaction.followup.send(content=output)
-    
     except ValueError as e:
         await interaction.followup.send(str(e), ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
-        
+
+# ====================== TOP25 ======================
+
 @client.tree.command(description="Show the top 25 players by power")
 @app_commands.describe(
     power_system="Power system: modern, classic, or fmc",
@@ -528,30 +539,23 @@ async def top25(
     display_type: str = "standard",
     control_type: str = "unique",
 ):
-    """top 25 players by total power in the given power system"""
     await interaction.response.defer(ephemeral=False)
-
     try:
         result = stats.top25(
             power_system=power_system.lower(),
             display_type=display_type.lower(),
             control_type=control_type.lower(),
         )
-
         lines = result.strip().split('\n')
         body_lines = lines[:-1] if len(lines) > 1 and lines[-1].startswith("[") else lines
         info_line = lines[-1] if len(lines) > 1 and lines[-1].startswith("[") else ""
 
-        # Split into chunks of 2000 characters or less
-        # Discord limit is 2000, but we need to account for the code block formatting (``` ```)
-        max_chunk_size = 1900  # Leave room for formatting and headers
-        
+        max_chunk_size = 1900
         chunks = []
         current_chunk = []
         current_length = 0
-        
         for line in body_lines:
-            line_length = len(line) + 1  # +1 for newline
+            line_length = len(line) + 1
             if current_length + line_length > max_chunk_size and current_chunk:
                 chunks.append("\n".join(current_chunk))
                 current_chunk = [line]
@@ -559,26 +563,21 @@ async def top25(
             else:
                 current_chunk.append(line)
                 current_length += line_length
-        
         if current_chunk:
             chunks.append("\n".join(current_chunk))
-        
-        # Send first chunk with header
+
         header = "**Top 25 Players**\n"
         for i, chunk in enumerate(chunks):
             if i == 0:
                 output = f"{header}```\n{chunk}\n```"
             else:
                 output = f"```\n{chunk}\n```"
-            
             if i == len(chunks) - 1 and info_line:
                 output += f"\n_{info_line}_"
-            
             if i == 0:
                 await interaction.followup.send(content=output)
             else:
                 await interaction.followup.send(content=output, ephemeral=False)
-
     except ValueError as e:
         await interaction.followup.send(str(e), ephemeral=True)
     except Exception as e:
@@ -607,51 +606,32 @@ async def bestscores(
     display_type: str = "standard",
     control_type: str = "unique",
 ):
-    """best scores per category, ranked by tier and % ahead of tier limit"""
     await interaction.response.defer(ephemeral=False)
-
     try:
         if username is None:
             username = interaction.user.display_name
-
-        result = stats.bestscores(
-            username,
-            power_system=power_system.lower(),
-            display_type=display_type.lower(),
-            control_type=control_type.lower(),
-        )
-
+        result = stats.bestscores(username, power_system=power_system.lower(),
+                                  display_type=display_type.lower(),
+                                  control_type=control_type.lower())
         output = f"**Best Scores for {username}**\n```\n{result}\n```"
         await interaction.followup.send(content=output)
-
     except ValueError as e:
         await interaction.followup.send(str(e), ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
 
-# ====================== LB20 (leaderboard top 20 %) ======================
-
-# Autocomplete helper for avglen (average length)
-async def avglen_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-    """autocomplete for average lengths"""
-    options = ["single", "ao5", "ao12", "ao25", "ao50", "ao100"]
-    choices = []
-    for name in options:
-        if current.lower() in name.lower():
-            choices.append(app_commands.Choice(name=name, value=name))
-    return choices[:25]
-
+# ====================== LB30 ======================
 
 @client.tree.command(description="Top 30 scores for a puzzle/relay/avglen, shown as % of #1")
 @app_commands.describe(
     puzzle_size="Puzzle size (e.g., 4x4, 3x3) – defaults to channel name or 4x4",
-    relay_type="Game mode (Standard, Marathon, relay…)",
+    relay_type="Game mode (Standard, Marathon 10, x10, rel, eut, width, bld …)",
     avglen="Average length: single, ao5, ao12, ao25, ao50, ao100",
     display_type="Display type for filtering scores",
     control_type="Control type for filtering scores",
     pb_type="PB type (time, move, tps)",
 )
-@app_commands.autocomplete(relay_type=relay_type_autocomplete)  # reuse from numwrs
+@app_commands.autocomplete(relay_type=relay_type_autocomplete)
 @app_commands.autocomplete(avglen=avglen_autocomplete)
 @app_commands.autocomplete(display_type=display_type_autocomplete)
 @app_commands.autocomplete(control_type=control_type_autocomplete)
@@ -665,17 +645,17 @@ async def lb30(
     control_type: str = "unique",
     pb_type: str = "time",
 ):
-    """top 30 leaderboard, showing each score as a percentage of the #1 score"""
     await interaction.response.defer(ephemeral=False)
-
     try:
         if puzzle_size is None:
             channel_name = interaction.channel.name if hasattr(interaction.channel, 'name') else ""
             puzzle_size = get_puzzle_size_from_channel(channel_name)
 
+        canonical_relay = parse_relay_type(relay_type)
+
         result = stats.lb30(
             puzzle_size=puzzle_size.lower(),
-            relay_type=relay_type,
+            relay_type=canonical_relay,
             avglen=avglen.lower(),
             display_type=display_type.lower(),
             control_type=control_type.lower(),
@@ -683,21 +663,18 @@ async def lb30(
         )
 
         lines = result.strip().split('\n')
-        # the last line is the info line
         body_lines = lines[:-1] if len(lines) > 1 and lines[-1].startswith("[") else lines
         info_line = lines[-1] if len(lines) > 1 and lines[-1].startswith("[") else ""
-
         body = "\n".join(body_lines)
-        output = f"**Top 30 – {puzzle_size} {relay_type} {avglen}**\n```\n{body}\n```"
+        output = f"**Top 30 – {puzzle_size} {canonical_relay} {avglen}**\n```\n{body}\n```"
         if info_line:
             output += f"\n_{info_line}_"
-
         await interaction.followup.send(content=output)
 
     except ValueError as e:
         await interaction.followup.send(str(e), ephemeral=True)
     except Exception as e:
-        await interaction.followup.send(f"error: {str(e)}", ephemeral=True)        
+        await interaction.followup.send(f"error: {str(e)}", ephemeral=True)   
 
 @client.tree.command(description="Update web backup by running updateweb.py script")
 async def updateweb(interaction: discord.Interaction):

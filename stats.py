@@ -2,6 +2,7 @@ import subprocess
 import sys
 import json
 import math
+import re
 from datetime import datetime
 from power_data import *
 
@@ -112,8 +113,12 @@ def get_category_id(width, height, gameMode, avglen):
         return "relay"
     elif gameMode == "Everything-up-to relay":
         return "eut"
+    elif gameMode == "Width relay":
+        return "wrel"
+    elif gameMode == "Height relay":
+        return "hrel"
     else:
-        return gameMode
+        return gameMode  # BLD etc.
 
 def get_all_categories_for_puzzle(N, M):
     cats = []
@@ -121,14 +126,17 @@ def get_all_categories_for_puzzle(N, M):
         cats.append((get_category_id(N, M, "Standard", avglen), "Standard", avglen))
     for mlen in [10, 25, 42, 50, 100]:
         cats.append((get_category_id(N, M, f"Marathon {mlen}", 1), f"Marathon {mlen}", 1))
-    cats.append((get_category_id(N, M, "2-N relay", 1), "2-N relay", 1))
-    cats.append((get_category_id(N, M, "Everything-up-to relay", 1), "Everything-up-to relay", 1))
+    # Explicit relay types
+    for mode in ["2-N relay", "Everything-up-to relay", "Width relay", "Height relay", "BLD"]:
+        cats.append((get_category_id(N, M, mode, 1), mode, 1))
     return cats
 
 def get_max_category_width():
-    cats = ["single", "ao5", "ao12", "ao25", "ao50", "ao100",
-            "x10", "x25", "x42", "x50", "x100", "relay", "eut"]
-    return max(len(c) for c in cats)
+    # include possible marathon IDs
+    base = ["single", "ao5", "ao12", "ao25", "ao50", "ao100",
+            "x10", "x25", "x42", "x50", "x100",
+            "relay", "eut", "wrel", "hrel", "BLD"]
+    return max(len(c) for c in base)
 
 def _get_metric_functions(pb_type):
     if pb_type in ("time", "fmc", "fmc mtm"):
@@ -138,7 +146,7 @@ def _get_metric_functions(pb_type):
         def fmt_secondary(s):
             moves = format_score(s['moves'], "move") if s['moves'] and s['moves'] != -1 else "-"
             tps = f"{s['tps']/1000:.3f}" if s['tps'] and s['tps'] != -1 else "-"
-            return f"({moves}/{tps})"   # parentheses around composite
+            return f"({moves}/{tps})"
     elif pb_type == "move":
         def get_primary(s): return s['moves']
         def is_better(a, b): return a < b
@@ -159,10 +167,7 @@ def _get_metric_functions(pb_type):
         raise ValueError(f"Unknown pb_type: {pb_type}")
     return get_primary, is_better, fmt_primary, fmt_secondary
 
-# Helper to pad columns dynamically for a list of rows
 def _pad_columns(rows):
-    """Given a list of lists of strings, return them as a list of lines with columns
-    padded to equal widths using ' | ' as separator."""
     if not rows:
         return []
     ncols = max(len(row) for row in rows)
@@ -175,6 +180,32 @@ def _pad_columns(rows):
         padded = [cell.ljust(widths[i]) for i, cell in enumerate(row)]
         out.append(" | ".join(padded))
     return out
+
+# ============================================================
+#  Marathon & relay type helper (for numwrs / lb30)
+# ============================================================
+
+def _resolve_relay_type(relay_str):
+    """Convert a user‑supplied relay_type string to a canonical gameMode name.
+       Returns (gameMode_name, is_marathon, marathon_number)"""
+    raw = relay_str.lower().strip()
+    # Marathon pattern: "marathon N" or "xN"
+    m = re.match(r'^x(\d+)$', raw)
+    if m:
+        return f"Marathon {m.group(1)}", True, int(m.group(1))
+    m = re.match(r'^marathon\s*(\d+)$', raw)
+    if m:
+        return f"Marathon {m.group(1)}", True, int(m.group(1))
+
+    # Try exact match in SOLVE_TYPE_MAP
+    for id_, name in SOLVE_TYPE_MAP.items():
+        if name.lower().strip() == raw:
+            return name, False, None
+    # partial match
+    for id_, name in SOLVE_TYPE_MAP.items():
+        if raw in name.lower().strip():
+            return name, False, None
+    return None, False, None
 
 # ============================================================
 #  Command: getpb
@@ -213,10 +244,11 @@ def get_pb(username_substring, puzzle_size,
                     if s['time'] < cur['time']: best_scores[key] = s
 
     all_cats = get_all_categories_for_puzzle(N, M)
+
     puzzle_str = f"{N}x{M}"
     max_cat_w = get_max_category_width()
     max_puz_w = len(puzzle_str)
-    rows = []
+    rows = []  # (puzzle_str, cat_id, primary_str, secondary_str, date_str, tier_annotation)
     for cat_id, gameMode, avglen in all_cats:
         key = (N, M, gameMode, avglen)
         if key not in best_scores: continue
@@ -247,11 +279,17 @@ def get_pb(username_substring, puzzle_size,
 
     if not rows:
         return f"No {pb_type} PBs found for {player_name} on {puzzle_size}."
-    # Format without header
+
+    # Calculate max combined score block width for alignment
+    score_blocks = [f"{prim} {sec}" for _, _, prim, sec, _, _ in rows]
+    max_score_w = max(len(b) for b in score_blocks)
+
     lines = []
     for puz, cat, prim, sec, date, tier in rows:
+        score_blk = f"{prim} {sec}"
         extra = f"{date} {tier}".strip()
-        lines.append(f"{puz.ljust(max_puz_w)} {cat.ljust(max_cat_w)} | {prim} {sec}  {extra}")
+        lines.append(f"{puz.ljust(max_puz_w)} {cat.ljust(max_cat_w)} | {score_blk.ljust(max_score_w)} | {extra}")
+
     header = f"{puzzle_str} {pb_type.upper()} PBs for {player_name}"
     info = f"[Display: {display_name} | Control: {control_name} | Power: {power_system.capitalize()}]"
     return header + "\n" + info + "\n" + "\n".join(lines)
@@ -273,6 +311,7 @@ def get_wr(puzzle_size,
     N, M = parse_puzzle_size(puzzle_size)
     get_primary, is_better, fmt_primary, fmt_secondary = _get_metric_functions(pb_type)
     all_cats = get_all_categories_for_puzzle(N, M)
+
     puzzle_str = f"{N}x{M}"
     max_cat_w = get_max_category_width()
     max_puz_w = len(puzzle_str)
@@ -313,12 +352,19 @@ def get_wr(puzzle_size,
                             tier_annotation += f"({next_tier['name']}={next_req_str})"
                     break
         rows.append((puzzle_str, cat_id, primary_str, secondary_str, holder, date_str, tier_annotation))
+
     if not rows:
         return f"No world records found for {puzzle_size} in {pb_type}."
+
+    score_blocks = [f"{prim} {sec}" for _, _, prim, sec, _, _, _ in rows]
+    max_score_w = max(len(b) for b in score_blocks)
+
     lines = []
     for puz, cat, prim, sec, holder, date, tier in rows:
+        score_blk = f"{prim} {sec}"
         extra = f"by {holder}  {date} {tier}".strip()
-        lines.append(f"{puz.ljust(max_puz_w)} {cat.ljust(max_cat_w)} | {prim} {sec}  {extra}")
+        lines.append(f"{puz.ljust(max_puz_w)} {cat.ljust(max_cat_w)} | {score_blk.ljust(max_score_w)} | {extra}")
+
     header = f"{puzzle_str} {pb_type.upper()} World Records"
     info = f"[Display: {display_name} | Control: {control_name} | Power: {power_system.capitalize()}]"
     return header + "\n" + info + "\n" + "\n".join(lines)
@@ -337,22 +383,20 @@ def numwrs(display_type="Standard", control_type="unique", pb_type="time",
         pb_type = "move"
     power_data, merged_data, display_name, control_name = _run_power(power_system, display_type, control_type, pb_type)
     get_primary, is_better, _, _ = _get_metric_functions(pb_type)
-    game_mode_filter = None
-    relay_lower = str(relay_type).lower().strip()
-    for id_, name in SOLVE_TYPE_MAP.items():
-        if name.lower().strip() == relay_lower:
-            game_mode_filter = name
-            break
+
+    # Resolve relay_type (with marathon support)
+    game_mode_filter, is_marathon, mara_num = _resolve_relay_type(relay_type)
     if game_mode_filter is None:
-        for id_, name in SOLVE_TYPE_MAP.items():
-            if relay_lower in name.lower().strip():
-                game_mode_filter = name
-                break
+        raise ValueError(f"Unknown relay_type: '{relay_type}'. Available: Standard, 2-N relay, "
+                         f"Everything-up-to relay, Width relay, Height relay, BLD, Marathon N, xN")
+
     all_cats = {}
     for s in merged_data:
         key = (s['width'], s['height'], s['gameMode'], s['avglen'])
         all_cats.setdefault(key, []).append(s)
+    # remove 2x2 if needed
     all_cats = {k: v for k, v in all_cats.items() if not (k[0] == 2 and k[1] == 2)}
+
     valid = {}
     for key, scores in all_cats.items():
         if any(get_primary(s) in (None, -1, 0) for s in scores):
@@ -360,13 +404,23 @@ def numwrs(display_type="Standard", control_type="unique", pb_type="time",
         if pb_type == "move" and any(s.get('moves', 1000) == 1000 for s in scores):
             continue
         valid[key] = scores
+
+    # Apply filter_type
     filter_lower = filter_type.lower().strip()
     if filter_lower == "nxm singles":
         valid = {k: v for k, v in valid.items() if k[3] == 1}
     elif filter_lower == "square averages":
         valid = {k: v for k, v in valid.items() if k[0] == k[1]}
-    if game_mode_filter:
+
+    # Apply relay filter
+    if is_marathon:
+        # only categories with gameMode == "Marathon {num}"
+        target_gm = f"Marathon {mara_num}"
+        valid = {k: v for k, v in valid.items() if k[2] == target_gm}
+    else:
         valid = {k: v for k, v in valid.items() if k[2] == game_mode_filter}
+
+    # Best per category
     category_best = {}
     for key, scores in valid.items():
         best_s, best_v, best_ts = None, None, float('inf')
@@ -378,6 +432,7 @@ def numwrs(display_type="Standard", control_type="unique", pb_type="time",
                 best_s, best_v, best_ts = s, v, ts
         if best_s:
             category_best[key] = (best_s, best_v, best_ts)
+
     player_wrs = {}
     for best_s, _, _ in category_best.values():
         name = best_s.get('nameFilter', 'Unknown')
@@ -385,13 +440,16 @@ def numwrs(display_type="Standard", control_type="unique", pb_type="time",
     sorted_players = sorted(player_wrs.items(), key=lambda x: (-x[1], x[0]))
     if not sorted_players:
         return "No world records found with the given filters."
+
     rows = [[str(rank), name, str(cnt)] for rank, (name, cnt) in enumerate(sorted_players, 1)]
     lines = _pad_columns(rows)
     total = sum(v for _, v in sorted_players)
     lines.append(f"Total: {total} WRs")
     info = f"[Display: {display_name} | Control: {control_name} | PB: {pb_type}]"
     filter_desc = f"[Filter: {filter_type}"
-    if game_mode_filter:
+    if is_marathon:
+        filter_desc += f" | Relay: Marathon {mara_num}"
+    else:
         filter_desc += f" | Relay: {game_mode_filter}"
     filter_desc += "]"
     return "\n".join(lines) + "\n" + info + "\n" + filter_desc
@@ -488,7 +546,6 @@ def top25(power_system="modern", display_type="Standard", control_type="unique")
         pb_type = "time"
     power_data, _, display_name, control_name = _run_power(power_system, display_type, control_type, pb_type)
     categories, tiers = POWER_SYSTEMS[power_system]
-    # helper to compute tiers for a player row
     def get_player_tiers(row):
         name, rank, total_power = row[0], row[1], row[2]
         times = row[3:]
@@ -537,7 +594,6 @@ def _player_scores(username, power_system, display_type, control_type, best=True
     categories, tiers = POWER_SYSTEMS[power_system]
     get_primary, is_better, fmt_primary, fmt_secondary = _get_metric_functions(pb_type)
 
-    # Gather the best (or worst) score per category
     user_scores = {}
     for s in merged_data:
         if username.lower() not in s['nameFilter'].lower():
@@ -553,9 +609,7 @@ def _player_scores(username, power_system, display_type, control_type, best=True
                 if new_val is not None and (cur_val is None or is_better(new_val, cur_val)):
                     user_scores[key] = s
             else:
-                # worst: keep the opposite extreme
                 if pb_type == "tps":
-                    # lower is worse
                     if new_val is not None and (cur_val is None or new_val < cur_val):
                         user_scores[key] = s
                 else:
@@ -565,7 +619,6 @@ def _player_scores(username, power_system, display_type, control_type, best=True
     if not user_scores:
         return f"No scores found for {username}."
 
-    # Build entries: (tier_order, ahead, ...)
     tier_order_map = {t['name']: i for i, t in enumerate(tiers)}
     entries = []
     for (W, H, gameMode, avglen), score in user_scores.items():
@@ -592,15 +645,11 @@ def _player_scores(username, power_system, display_type, control_type, best=True
         ahead = (limit - val) / limit * 100
         entries.append((tier_order_map[achieved_tier['name']], ahead, W, H, gameMode, avglen, val, score, achieved_tier['name']))
 
-    # Sort: first by tier_order descending (highest tier first), then inside tier:
-    #   bestscores: ahead descending (most ahead first)
-    #   worstscores: ahead ascending (most behind first)
     entries.sort(key=lambda e: (-e[0], -e[1] if best else e[1]))
 
-    # Group by tier and format
     output_lines = []
     current_tier_name = None
-    tier_lines = []   # collect rows for current tier
+    tier_lines = []
     for tier_ord, ahead, W, H, gameMode, avglen, val, score, tier_name in entries:
         if tier_name != current_tier_name:
             if tier_lines:
@@ -618,7 +667,7 @@ def _player_scores(username, power_system, display_type, control_type, best=True
     if tier_lines:
         output_lines.extend(_pad_columns(tier_lines))
 
-    if not any("===" in l for l in output_lines):  # no tier headers, means empty
+    if not any("===" in l for l in output_lines):
         return f"No ranked scores for {username} in {power_system}."
     info = f"\n[Power: {power_system.capitalize()} | Display: {display_type} | Control: {control_type}]"
     return "\n".join(output_lines) + info
@@ -642,20 +691,13 @@ def lb30(puzzle_size="4x4", relay_type="Standard", avglen="single",
         avglen_num = int(avglen_str[2:])
     else:
         raise ValueError("avglen must be 'single' or 'aoNN'")
-    game_mode = None
-    relay_lower = relay_type.lower().strip()
-    for id_, name in SOLVE_TYPE_MAP.items():
-        if name.lower().strip() == relay_lower:
-            game_mode = name
-            break
+
+    # Resolve relay type (with marathon support)
+    game_mode, is_marathon, mara_num = _resolve_relay_type(relay_type)
     if game_mode is None:
-        for id_, name in SOLVE_TYPE_MAP.items():
-            if relay_lower in name.lower().strip():
-                game_mode = name
-                break
-    if game_mode is None:
-        available = ", ".join(SOLVE_TYPE_MAP.values())
-        raise ValueError(f"Unknown relay_type: '{relay_type}'. Available: {available}")
+        raise ValueError(f"Unknown relay_type: '{relay_type}'. Available: Standard, 2-N relay, "
+                         "Everything-up-to relay, Width relay, Height relay, BLD, Marathon N, xN")
+
     N, M = parse_puzzle_size(puzzle_size)
     _, merged_data, display_name, control_name = _run_power("modern", display_type, control_type, pb_type)
     get_primary, is_better, fmt_primary, fmt_secondary = _get_metric_functions(pb_type)
