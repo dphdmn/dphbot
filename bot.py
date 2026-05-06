@@ -483,11 +483,11 @@ async def numwrs(
         # Parse the result - no more table borders, just clean text
         lines = result.strip().split('\n')
         
-        header = lines[0] if lines else "World Record Counts"
+        header = "World Record Counts"
         body_lines = []
         info_parts = []
         
-        for line in lines[1:]:
+        for line in lines[0:]:
             stripped = line.strip()
             if stripped.startswith("[Display:") or stripped.startswith("[Filter:"):
                 info_parts.append(stripped)
@@ -508,6 +508,196 @@ async def numwrs(
         await interaction.followup.send(str(e), ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
+        
+@client.tree.command(description="Show the top 25 players by power")
+@app_commands.describe(
+    power_system="Power system: modern, classic, or fmc",
+    display_type="Display type for filtering scores",
+    control_type="Control type for filtering scores",
+)
+@app_commands.choices(power_system=[
+    app_commands.Choice(name="modern", value="modern"),
+    app_commands.Choice(name="classic", value="classic"),
+    app_commands.Choice(name="fmc", value="fmc"),
+])
+@app_commands.autocomplete(display_type=display_type_autocomplete)
+@app_commands.autocomplete(control_type=control_type_autocomplete)
+async def top25(
+    interaction: discord.Interaction,
+    power_system: str = "modern",
+    display_type: str = "standard",
+    control_type: str = "unique",
+):
+    """top 25 players by total power in the given power system"""
+    await interaction.response.defer(ephemeral=False)
+
+    try:
+        result = stats.top25(
+            power_system=power_system.lower(),
+            display_type=display_type.lower(),
+            control_type=control_type.lower(),
+        )
+
+        lines = result.strip().split('\n')
+        body_lines = lines[:-1] if len(lines) > 1 and lines[-1].startswith("[") else lines
+        info_line = lines[-1] if len(lines) > 1 and lines[-1].startswith("[") else ""
+
+        # Split into chunks of 2000 characters or less
+        # Discord limit is 2000, but we need to account for the code block formatting (``` ```)
+        max_chunk_size = 1900  # Leave room for formatting and headers
+        
+        chunks = []
+        current_chunk = []
+        current_length = 0
+        
+        for line in body_lines:
+            line_length = len(line) + 1  # +1 for newline
+            if current_length + line_length > max_chunk_size and current_chunk:
+                chunks.append("\n".join(current_chunk))
+                current_chunk = [line]
+                current_length = line_length
+            else:
+                current_chunk.append(line)
+                current_length += line_length
+        
+        if current_chunk:
+            chunks.append("\n".join(current_chunk))
+        
+        # Send first chunk with header
+        header = "**Top 25 Players**\n"
+        for i, chunk in enumerate(chunks):
+            if i == 0:
+                output = f"{header}```\n{chunk}\n```"
+            else:
+                output = f"```\n{chunk}\n```"
+            
+            if i == len(chunks) - 1 and info_line:
+                output += f"\n_{info_line}_"
+            
+            if i == 0:
+                await interaction.followup.send(content=output)
+            else:
+                await interaction.followup.send(content=output, ephemeral=False)
+
+    except ValueError as e:
+        await interaction.followup.send(str(e), ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
+
+# ====================== BESTSCORES / WORSTSCORES ======================
+
+@client.tree.command(description="Show a player's best scores per category, grouped by tier")
+@app_commands.describe(
+    username="Player name (or part of it) – defaults to your Discord display name",
+    power_system="Power system: modern, classic, or fmc",
+    display_type="Display type for filtering scores",
+    control_type="Control type for filtering scores",
+)
+@app_commands.choices(power_system=[
+    app_commands.Choice(name="modern", value="modern"),
+    app_commands.Choice(name="classic", value="classic"),
+    app_commands.Choice(name="fmc", value="fmc"),
+])
+@app_commands.autocomplete(display_type=display_type_autocomplete)
+@app_commands.autocomplete(control_type=control_type_autocomplete)
+async def bestscores(
+    interaction: discord.Interaction,
+    username: str = None,
+    power_system: str = "modern",
+    display_type: str = "standard",
+    control_type: str = "unique",
+):
+    """best scores per category, ranked by tier and % ahead of tier limit"""
+    await interaction.response.defer(ephemeral=False)
+
+    try:
+        if username is None:
+            username = interaction.user.display_name
+
+        result = stats.bestscores(
+            username,
+            power_system=power_system.lower(),
+            display_type=display_type.lower(),
+            control_type=control_type.lower(),
+        )
+
+        output = f"**Best Scores for {username}**\n```\n{result}\n```"
+        await interaction.followup.send(content=output)
+
+    except ValueError as e:
+        await interaction.followup.send(str(e), ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
+
+# ====================== LB20 (leaderboard top 20 %) ======================
+
+# Autocomplete helper for avglen (average length)
+async def avglen_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    """autocomplete for average lengths"""
+    options = ["single", "ao5", "ao12", "ao25", "ao50", "ao100"]
+    choices = []
+    for name in options:
+        if current.lower() in name.lower():
+            choices.append(app_commands.Choice(name=name, value=name))
+    return choices[:25]
+
+
+@client.tree.command(description="Top 30 scores for a puzzle/relay/avglen, shown as % of #1")
+@app_commands.describe(
+    puzzle_size="Puzzle size (e.g., 4x4, 3x3) – defaults to channel name or 4x4",
+    relay_type="Game mode (Standard, Marathon, relay…)",
+    avglen="Average length: single, ao5, ao12, ao25, ao50, ao100",
+    display_type="Display type for filtering scores",
+    control_type="Control type for filtering scores",
+    pb_type="PB type (time, move, tps)",
+)
+@app_commands.autocomplete(relay_type=relay_type_autocomplete)  # reuse from numwrs
+@app_commands.autocomplete(avglen=avglen_autocomplete)
+@app_commands.autocomplete(display_type=display_type_autocomplete)
+@app_commands.autocomplete(control_type=control_type_autocomplete)
+@app_commands.autocomplete(pb_type=pb_type_autocomplete)
+async def lb30(
+    interaction: discord.Interaction,
+    puzzle_size: str = None,
+    relay_type: str = "Standard",
+    avglen: str = "single",
+    display_type: str = "standard",
+    control_type: str = "unique",
+    pb_type: str = "time",
+):
+    """top 30 leaderboard, showing each score as a percentage of the #1 score"""
+    await interaction.response.defer(ephemeral=False)
+
+    try:
+        if puzzle_size is None:
+            channel_name = interaction.channel.name if hasattr(interaction.channel, 'name') else ""
+            puzzle_size = get_puzzle_size_from_channel(channel_name)
+
+        result = stats.lb30(
+            puzzle_size=puzzle_size.lower(),
+            relay_type=relay_type,
+            avglen=avglen.lower(),
+            display_type=display_type.lower(),
+            control_type=control_type.lower(),
+            pb_type=pb_type.lower(),
+        )
+
+        lines = result.strip().split('\n')
+        # the last line is the info line
+        body_lines = lines[:-1] if len(lines) > 1 and lines[-1].startswith("[") else lines
+        info_line = lines[-1] if len(lines) > 1 and lines[-1].startswith("[") else ""
+
+        body = "\n".join(body_lines)
+        output = f"**Top 30 – {puzzle_size} {relay_type} {avglen}**\n```\n{body}\n```"
+        if info_line:
+            output += f"\n_{info_line}_"
+
+        await interaction.followup.send(content=output)
+
+    except ValueError as e:
+        await interaction.followup.send(str(e), ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"error: {str(e)}", ephemeral=True)        
 
 @client.tree.command(description="Update web backup by running updateweb.py script")
 async def updateweb(interaction: discord.Interaction):
