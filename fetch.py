@@ -10,9 +10,11 @@ Output: merged_leaderboard.txt  (JSON string of the merged score list)
 
 import sys
 import json
+import time
 import requests
 import lzma
 import io
+import os
 from power_data import *
 
 # ---------- helper functions ----------
@@ -229,6 +231,67 @@ def get_archive_scores(display_type, control_type, pb_type):
     key = f"{display_type}_{control_type}_{pb_type}"
     return archive.get("data", {}).get(key, "")
 
+# ---------- helper functions ----------
+
+def get_latest_log_mtime(logs_dir):
+    """Get the modification time of the most recent log file in the logs directory."""
+    if not os.path.exists(logs_dir):
+        return None
+    
+    latest_time = 0
+    for filename in os.listdir(logs_dir):
+        if filename.endswith('.log'):
+            filepath = os.path.join(logs_dir, filename)
+            mtime = os.path.getmtime(filepath)
+            if mtime > latest_time:
+                latest_time = mtime
+    
+    return latest_time if latest_time > 0 else None
+
+
+def should_fetch_scores(logs_dir, info_file, merged_file):
+    """Check if we need to fetch scores based on log file changes."""
+    # Get the latest log modification time
+    latest_log_mtime = get_latest_log_mtime(logs_dir)
+    if latest_log_mtime is None:
+        print("No log files found. Proceeding with fetch.")
+        return True
+    
+    # Check if merged_leaderboard.txt exists
+    if not os.path.exists(merged_file):
+        print("No merged leaderboard file found. Proceeding with fetch.")
+        return True
+    
+    # Check if last_fetch_info.txt exists
+    if os.path.exists(info_file):
+        try:
+            with open(info_file, 'r', encoding='utf-8') as f:
+                info = json.load(f)
+                last_mtime = info.get('last_log_mtime', 0)
+                
+                if last_mtime == latest_log_mtime:
+                    print(f"Log files unchanged since last fetch (mtime: {latest_log_mtime}). Skipping fetch.")
+                    return False
+                else:
+                    print(f"Log files changed. Last mtime: {last_mtime}, Current mtime: {latest_log_mtime}")
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"Error reading last_fetch_info.txt: {e}. Proceeding with fetch.")
+    else:
+        print("No last_fetch_info.txt found. Proceeding with fetch.")
+    
+    return True
+
+
+def save_fetch_info(info_file, latest_log_mtime):
+    """Save the fetch info for next run."""
+    info = {
+        'last_log_mtime': latest_log_mtime,
+        'last_fetch_time': time.time()
+    }
+    with open(info_file, 'w', encoding='utf-8') as f:
+        json.dump(info, f, ensure_ascii=False)
+
+
 # ---------- main script ----------
 
 def main():
@@ -251,6 +314,16 @@ def main():
 
     print(f"Fetching: display={display_type_str} ({display_type}), "
           f"control={control_type_str} ({control_type}), pb={pb_type_str} ({pb_type})")
+
+    # Configure paths
+    logs_dir = r"C:\coding\slidywebdata\logs"
+    info_file = "last_fetch_info.txt"
+    merged_file = "merged_leaderboard.txt"
+    
+    # Check if we need to fetch scores
+    if not should_fetch_scores(logs_dir, info_file, merged_file):
+        print("Using existing merged leaderboard data. Exiting cleanly.")
+        sys.exit(0)
 
     # 1. Fetch live scores
     try:
@@ -284,6 +357,12 @@ def main():
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(merged, f, ensure_ascii=False)
     print(f"Written merged leaderboard to {output_path}")
+    
+    # 5. Save fetch info for next run
+    latest_log_mtime = get_latest_log_mtime(logs_dir)
+    if latest_log_mtime is not None:
+        save_fetch_info(info_file, latest_log_mtime)
+        print(f"Updated last_fetch_info.txt with log mtime: {latest_log_mtime}")
 
 if __name__ == "__main__":
     main()
