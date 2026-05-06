@@ -277,6 +277,61 @@ async def getpb(
     except Exception as e:
         await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
 
+@client.tree.command(description="get world records for a puzzle size")
+@app_commands.describe(
+    puzzle_size="puzzle size in nxm format (e.g., 4x4, 3x3) - defaults to channel name or 4x4",
+    power_system="power system to use for tier info",
+    display_type="display type for filtering scores",
+    control_type="control type for filtering scores",
+    pb_type="pb type to display"
+)
+@app_commands.choices(power_system=[
+    app_commands.Choice(name="modern", value="modern"),
+    app_commands.Choice(name="classic", value="classic"),
+    app_commands.Choice(name="fmc", value="fmc")
+])
+@app_commands.autocomplete(display_type=display_type_autocomplete)
+@app_commands.autocomplete(control_type=control_type_autocomplete)
+@app_commands.autocomplete(pb_type=pb_type_autocomplete)
+async def getwr(
+    interaction: discord.Interaction, 
+    puzzle_size: str = None, 
+    power_system: str = "modern", 
+    display_type: str = "standard", 
+    control_type: str = "unique", 
+    pb_type: str = "time"
+):
+    """get world records for a specific puzzle size"""
+    await interaction.response.defer(ephemeral=False)
+    
+    try:
+        if puzzle_size is None:
+            channel_name = interaction.channel.name if hasattr(interaction.channel, 'name') else ""
+            puzzle_size = get_puzzle_size_from_channel(channel_name)
+        
+        display_id, display_name = validate_and_get_display(display_type)
+        control_id, control_name = validate_and_get_control(control_type)
+        pb_id = validate_and_get_pb(pb_type)
+        
+        result = stats.get_wr(puzzle_size.lower(), power_system.lower(), display_type.lower(), control_type.lower(), pb_type.lower())
+        
+        # wrap result in code block
+        lines = result.strip().split('\n')
+        title = lines[0] if lines else "world records"
+        details = lines[1] if len(lines) > 1 else ""
+
+        body = "\n".join(lines[2:]) if len(lines) > 2 else ""
+        body = re.sub(r' {2,}', ' ', body)
+        
+        # send everything in one code block
+        output = f"**{title}**\n_{details}_\n```\n{body if body else 'no data'}\n```"
+        
+        await interaction.followup.send(content=output)
+    
+    except ValueError as e:
+        await interaction.followup.send(str(e), ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
 
 @client.tree.command(description="get power ranking for a player")
 @app_commands.describe(
