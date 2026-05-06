@@ -1008,7 +1008,7 @@ async def admin_playtime_exe(interaction: discord.Interaction, timeframe: str = 
         if 'conn' in locals():
             conn.close()
 
-@client.tree.command(description="[Admin only] Get your personal best history (progression of records) for a specific puzzle size in slidysim exe")
+@client.tree.command(description="[Admin only] Get your personal best history for a specific puzzle in slidysim exe")
 @app_commands.describe(
     size="Puzzle size in NxM format (e.g., 4x5, 10x18, 5x5)",
     pbtype="Type of personal best to track (time = lower better, moves = lower better, tps = higher better)",
