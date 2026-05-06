@@ -676,7 +676,7 @@ async def lb30(
     except Exception as e:
         await interaction.followup.send(f"error: {str(e)}", ephemeral=True)   
 
-@client.tree.command(description="Update web backup by running updateweb.py script")
+@client.tree.command(description="Update Slidysim Web scores data")
 async def updateweb(interaction: discord.Interaction):
     global updateweb_running
 
@@ -758,9 +758,9 @@ async def updateweb(interaction: discord.Interaction):
     finally:
         updateweb_running = False
 
-@client.tree.command(description="Get best marathon splits for NxM puzzles")
+@client.tree.command(description="[Admin only] Get best marathon splits for NxM puzzles in slidysim exe")
 @app_commands.describe(puzzle_size="Puzzle size in NxM format (e.g. 3x3)")
-async def marathons(interaction: discord.Interaction, puzzle_size: str):
+async def admin_marathons_exe(interaction: discord.Interaction, puzzle_size: str):
     """Get the best cumulative times for each split across all marathons of specified puzzle size"""
     await interaction.response.defer(ephemeral=False)
     try:
@@ -827,11 +827,11 @@ async def marathons(interaction: discord.Interaction, puzzle_size: str):
             ephemeral=True
         )
 
-@client.tree.command(description="Show your total playtime by puzzle size")
+@client.tree.command(description="[Admin only] Show your total playtime by puzzle size in slidysim exe")
 @app_commands.describe(
     timeframe="Optional filter: all (default), last N hours, day, week, or month"
 )
-async def playtime(interaction: discord.Interaction, timeframe: str = "all"):
+async def admin_playtime_exe(interaction: discord.Interaction, timeframe: str = "all"):
     try:
         # Defer the response to prevent timeout
         await interaction.response.defer(ephemeral=False)
@@ -1008,7 +1008,7 @@ async def playtime(interaction: discord.Interaction, timeframe: str = "all"):
         if 'conn' in locals():
             conn.close()
 
-@client.tree.command(description="Get your personal best history (progression of records) for a specific puzzle size")
+@client.tree.command(description="[Admin only] Get your personal best history (progression of records) for a specific puzzle size in slidysim exe")
 @app_commands.describe(
     size="Puzzle size in NxM format (e.g., 4x5, 10x18, 5x5)",
     pbtype="Type of personal best to track (time = lower better, moves = lower better, tps = higher better)",
@@ -1017,7 +1017,7 @@ async def playtime(interaction: discord.Interaction, timeframe: str = "all"):
     tps_limit="Optional minimum TPS (only solves above this count toward PBs)",
     hours_limit="Optional time window in hours (e.g., 24 for last day; defaults to all time)"
 )
-async def pbhistory(
+async def admin_pbhistory_exe(
     interaction: discord.Interaction,
     size: str,
     pbtype: Literal["time", "moves", "tps"] = "time",
@@ -1176,7 +1176,7 @@ async def pbhistory(
         if 'conn' in locals():
             conn.close()
 
-@client.tree.command(description="Get your personal best solve for a specific puzzle size")
+@client.tree.command(description="[Admin only] Get your personal best solve for a specific puzzle size in slidysim exe")
 @app_commands.describe(
     size="Puzzle size in NxM format (e.g., 4x5, 10x18, 5x5)",
     pbtype="Type of personal best to retrieve",
@@ -1184,7 +1184,7 @@ async def pbhistory(
     moves_limit="Optional maximum moves",
     hours_limit="Optional time window in hours (e.g., 24 for last day)"
 )
-async def getpbexe(
+async def admin_getpb_exe(
     interaction: discord.Interaction,
     size: str,
     pbtype: Literal["time", "moves", "tps"] = "time",
@@ -1388,8 +1388,8 @@ async def getpbexe(
         if 'conn' in locals():
             conn.close()
 
-@client.tree.command(description="Get latest SlidySim solve")
-async def latest(interaction: discord.Interaction):
+@client.tree.command(description="[Admin only] Get latest slidysim exe solve")
+async def admin_latest_exe(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=False)
     try:
         # Check if the user is authorized
@@ -1527,8 +1527,8 @@ async def splits(
 
     
 
-@client.tree.command(description="Get a short URL one-click button from Replay File")
-async def replay(interaction: discord.Interaction, file: discord.Attachment, metadata: str = None):
+@client.tree.command(description="[Admin only] Get a short URL one-click button from Replay File")
+async def admin_replay(interaction: discord.Interaction, file: discord.Attachment, metadata: str = None):
     ALLOWED_USER_IDS = [YOUR_USER_ID]
 
     if interaction.user.id not in ALLOWED_USER_IDS:
