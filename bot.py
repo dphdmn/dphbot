@@ -2,7 +2,7 @@ from dotenv import load_dotenv
 import os
 import discord
 import io
-from discord import app_commands
+from discord import app_commands, ui
 import sqlite3
 import json
 import base64
@@ -16,76 +16,20 @@ from typing import Literal
 import subprocess
 import asyncio
 import stats
-from discord import app_commands
 from power_data import DISPLAY_TYPE_MAP, CONTROL_TYPE_MAP, PB_TYPE_MAP, SOLVE_TYPE_MAP
 import re
 
-
-
 load_dotenv()
 
-#usage: python bot.py
-
-#reqs:
-#pip install python-dotenv discord.py tabulate
-
-#CONFIG (use .env file)
-#─────────────────────────────────────────────────────────────
+# CONFIG (use .env file)
 token = os.getenv("BOT_TOKEN")
-# Discord bot token (KEEP SECRET)
-# Get it from: https://discord.com/developers/applications/
-# Never share or commit this anywhere
-
 db_path = os.getenv("DB_PATH")
-# example: "C:/programs/!PROGRAMS/slidysim29/solves.db"
-# path to your local slidysim solves database file
-
 YOUR_USER_ID = int(os.getenv("DISCORD_USER_ID"))
-# example: "537316990679777280"
-# your Discord user ID (right-click username → Copy ID)
-# used to restrict commands so only you can run them
-
-# ─────────────────────────────────────────────────────────────
-# IMPORTANT: Replay / file hosting setup (REQUIRED)
-# ─────────────────────────────────────────────────────────────
-# This project DOES NOT store replays in the bot itself.
-# Instead, it saves replay files into a GitHub repository you own,
-# and generates a public link using GitHub Pages.
-#
-# You must create your own repo for this system to work.
-#
-# Example reference setup:
-# https://github.com/dphdmn/mytextfiles
-# (see index.html for redirect logic)
-#
-# You need:
-# 1. A GitHub repository (your own copy of the template repo)
-# 2. GitHub Pages enabled for that repo
-# 3. A local clone of the repo on your PC (using git!)
-# ─────────────────────────────────────────────────────────────
 
 REPO_NAME = os.getenv("TXT_REPO_NAME")
-# example: "mytextfiles"
-# your GitHub repository name used for storing replay files
-
 LOCAL_PATH = os.getenv("TXT_REPO_LOCAL_PATH")
-# example: "C:/Users/dphdmn/Documents"
-# parent folder that contains cloned GitHub repo on your computer
-
 GITHUB = os.getenv("TXT_REPO_GITHUB")
-# example: "https://dphdmn.github.io"
-# your GitHub Pages domain (must match your repo setup)
-
 SUBFOLDERS = os.getenv("TXT_REPO_SUBFOLDERS")
-# example: "slidy/generated"
-# folder inside the repo where replay files are saved
-
-# If you do not want to set up your own text files repository:
-# You can modify the save_replay_and_generate_url function instead.
-# Or modify other functions to send txt files instead of creating URLs
-#─────────────────────────────────────────────────────────────
-
-# Script path (only for web update command)
 script_path = os.getenv("UPDATEWEB_SCRIPT_PATH")
 
 REPO_LOCAL_DIR = os.path.join(LOCAL_PATH, REPO_NAME)
@@ -93,15 +37,12 @@ GENERATED_DIR = os.path.join(REPO_LOCAL_DIR, SUBFOLDERS)
 
 updateweb_running = False
 
+# ───────────────── helper functions (unchanged) ─────────────────
 def save_replay_and_generate_url(file_content: str, filename: str) -> str:
     os.makedirs(GENERATED_DIR, exist_ok=True)
     filepath = os.path.join(GENERATED_DIR, filename)
-
-    # Save file
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(file_content)
-
-    # Git operations
     try:
         os.chdir(REPO_LOCAL_DIR)
         os.system("git add .")
@@ -109,10 +50,7 @@ def save_replay_and_generate_url(file_content: str, filename: str) -> str:
         os.system("git push -u origin main")
     except Exception as e:
         raise RuntimeError(f"Git error: {e}")
-
-    # Generate URL
     return f"{GITHUB}/{REPO_NAME}/index.html?url={REPO_NAME}/{SUBFOLDERS}/{filename}"
-
 
 def encodeURIComponent(string):
     return ''.join(c if c.isalnum() or c in ['-', '_', '.', '~'] else f"%{ord(c):02X}" for c in string)
@@ -133,81 +71,17 @@ class MyClient(discord.Client):
 
 client = MyClient()
 
-# Add this global variable near the top of your file with other globals
-updateweb_running = False
-
-# ======================== PARSE RELAY TYPE ========================
-
-def parse_relay_type(raw: str) -> str:
-    """Convert user input to a canonical gameMode name (e.g. 'rel' -> '2-N relay',
-    'x10' -> 'Marathon 10')."""
-    raw = raw.strip()
-    raw_lower = raw.lower()
-
-    # Marathon patterns: "x<num>" or "Marathon <num>"
-    m = re.match(r'^x(\d+)$', raw_lower)
-    if m:
-        return f"Marathon {m.group(1)}"
-    m = re.match(r'^marathon\s*(\d+)$', raw_lower)
-    if m:
-        return f"Marathon {m.group(1)}"
-
-    # Aliases for well‑known relay types
-    alias_map = {
-        "rel": "2-N relay",
-        "relay": "2-N relay",
-        "eut": "Everything-up-to relay",
-        "everything": "Everything-up-to relay",
-        "everything-up-to": "Everything-up-to relay",
-        "width": "Width relay",
-        "wrel": "Width relay",
-        "height": "Height relay",
-        "hrel": "Height relay",
-        "bld": "BLD",
-        "blindfolded": "BLD",
-    }
-    # exact alias
-    if raw_lower in alias_map:
-        return alias_map[raw_lower]
-
-    # partial match against SOLVE_TYPE_MAP values (case‑insensitive)
-    for name in SOLVE_TYPE_MAP.values():
-        if raw_lower in name.lower():
-            return name
-    # also try if the name is inside the input
-    for name in SOLVE_TYPE_MAP.values():
-        if name.lower() in raw_lower:
-            return name
-
-    # last resort: check for "standard"
-    if raw_lower == "standard":
-        return "Standard"
-
-    raise ValueError(f"Unknown relay type: '{raw}'. Accepted: Standard, 2-N relay, "
-                     "Everything-up-to relay, Width relay, Height relay, BLD, "
-                     "Marathon N, xN, rel, eut, width, etc.")
-
-# ======================== AUTOCOMPLETE ========================
-
+# ═══════════ autocomplete / helpers (unchanged) ═══════════
 async def display_type_autocomplete(interaction, current):
-    choices = []
-    for name in DISPLAY_TYPE_MAP.values():
-        if current.lower() in name.lower():
-            choices.append(app_commands.Choice(name=name, value=name))
+    choices = [app_commands.Choice(name=name, value=name) for name in DISPLAY_TYPE_MAP.values() if current.lower() in name.lower()]
     return choices[:25]
 
 async def control_type_autocomplete(interaction, current):
-    choices = []
-    for name in CONTROL_TYPE_MAP.values():
-        if current.lower() in name.lower():
-            choices.append(app_commands.Choice(name=name, value=name))
+    choices = [app_commands.Choice(name=name, value=name) for name in CONTROL_TYPE_MAP.values() if current.lower() in name.lower()]
     return choices[:25]
 
 async def pb_type_autocomplete(interaction, current):
-    choices = []
-    for name in PB_TYPE_MAP.values():
-        if current.lower() in name.lower():
-            choices.append(app_commands.Choice(name=name, value=name))
+    choices = [app_commands.Choice(name=name, value=name) for name in PB_TYPE_MAP.values() if current.lower() in name.lower()]
     return choices[:25]
 
 async def filter_type_autocomplete(interaction, current):
@@ -215,16 +89,7 @@ async def filter_type_autocomplete(interaction, current):
     return [app_commands.Choice(name=n, value=n) for n in filter_types if current.lower() in n.lower()][:25]
 
 async def relay_type_autocomplete(interaction, current):
-    """autocomplete for relay/gameMode, including marathons and aliases."""
-    # canonical names from SOLVE_TYPE_MAP
-    suggestions = list(SOLVE_TYPE_MAP.values())
-    # common marathon values
-    marathon_samples = ["Marathon 10", "Marathon 25", "Marathon 42", "Marathon 50", "Marathon 100"]
-    suggestions.extend(marathon_samples)
-    # aliases shown as hints
-    aliases = ["x10", "x25", "x42", "x50", "x100", "rel", "eut", "width", "height", "bld", "blindfolded"]
-    suggestions.extend(aliases)
-
+    suggestions = list(SOLVE_TYPE_MAP.values()) + ["Marathon 10", "Marathon 25", "Marathon 42", "Marathon 50", "Marathon 100", "x10", "x25", "x42", "x50", "x100", "rel", "eut", "width", "height", "bld", "blindfolded"]
     current_lower = current.lower()
     filtered = []
     seen = set()
@@ -240,9 +105,7 @@ async def avglen_autocomplete(interaction, current):
 
 def get_puzzle_size_from_channel(channel_name: str) -> str:
     match = re.search(r'(\d+x\d+)', channel_name, re.IGNORECASE)
-    if match:
-        return match.group(1).lower()
-    return "4x4"
+    return match.group(1).lower() if match else "4x4"
 
 def validate_and_get_display(display_type: str):
     display_lower = display_type.lower().strip()
@@ -284,7 +147,100 @@ def validate_and_get_pb(pb_type: str):
     available = ", ".join(PB_TYPE_MAP.values())
     raise ValueError(f"unknown pb_type: '{pb_type}'. available: {available}")
 
-# ======================== COMMANDS ========================
+def parse_relay_type(raw: str) -> str:
+    raw = raw.strip()
+    raw_lower = raw.lower()
+    m = re.match(r'^x(\d+)$', raw_lower)
+    if m:
+        return f"Marathon {m.group(1)}"
+    m = re.match(r'^marathon\s*(\d+)$', raw_lower)
+    if m:
+        return f"Marathon {m.group(1)}"
+    alias_map = {
+        "rel": "2-N relay", "relay": "2-N relay",
+        "eut": "Everything-up-to relay", "everything": "Everything-up-to relay",
+        "everything-up-to": "Everything-up-to relay",
+        "width": "Width relay", "wrel": "Width relay",
+        "height": "Height relay", "hrel": "Height relay",
+        "bld": "BLD", "blindfolded": "BLD",
+    }
+    if raw_lower in alias_map:
+        return alias_map[raw_lower]
+    for name in SOLVE_TYPE_MAP.values():
+        if raw_lower in name.lower():
+            return name
+    for name in SOLVE_TYPE_MAP.values():
+        if name.lower() in raw_lower:
+            return name
+    if raw_lower == "standard":
+        return "Standard"
+    raise ValueError(f"Unknown relay type: '{raw}'. Accepted: Standard, 2-N relay, Everything-up-to relay, Width relay, Height relay, BLD, Marathon N, xN, rel, eut, width, etc.")
+
+# ═══════════ safety net for large messages ═══════════
+async def safe_followup(interaction: discord.Interaction, content: str, view=None, ephemeral=False, file=None):
+    if len(content) > 2000:
+        f = discord.File(io.StringIO(content), filename="response.txt")
+        await interaction.followup.send(content="Output too large – see attached file.", file=f, view=view, ephemeral=ephemeral)
+    else:
+        await interaction.followup.send(content=content, view=view, ephemeral=ephemeral)
+
+async def safe_edit(interaction: discord.Interaction, content: str, view=None):
+    if len(content) > 2000:
+        f = discord.File(io.StringIO(content), filename="response.txt")
+        await interaction.edit_original_response(content="Output too large – see attached file.", attachments=[f], view=view)
+    else:
+        await interaction.edit_original_response(content=content, view=view)
+
+# ═══════════ help command ═══════════
+@client.tree.command(description="List all available commands (non-admin)")
+async def help(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    commands = client.tree.get_commands()
+    public = [cmd for cmd in commands if "[Admin only]" not in cmd.description]
+    if not public:
+        await interaction.followup.send("No public commands found.", ephemeral=True)
+        return
+    embed = discord.Embed(title="Available Commands", color=0x5865F2)
+    for cmd in public:
+        embed.add_field(name=f"/{cmd.name}", value=cmd.description or "No description", inline=False)
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+# ═══════════ getpb (with puzzle size buttons) ═══════════
+async def getpb_view(username, puzzle_size, power_system, display_type, control_type, pb_type):
+    view = ui.View(timeout=None)
+    sizes_small = ["3x3", "4x4", "5x5", "6x6", "7x7", "8x8", "9x9", "10x10"]
+    sizes_big   = ["12x12", "16x16", "20x20"]
+
+    async def make_callback(size):
+        async def cb(interaction: discord.Interaction):
+            await interaction.response.defer()
+            try:
+                new_result = stats.get_pb(username, size, power_system,
+                                         display_type.lower(), control_type.lower(), pb_type.lower())
+                new_lines = new_result.strip().split('\n')
+                new_title = new_lines[0] if new_lines else "personal bests"
+                new_details = new_lines[1] if len(new_lines) > 1 else ""
+                new_body = "\n".join(new_lines[2:]) if len(new_lines) > 2 else ""
+                new_output = f"**{new_title}**\n_{new_details}_\n```\n{new_body if new_body else 'no data'}\n```"
+                new_view = await getpb_view(username, size, power_system, display_type, control_type, pb_type)
+                for child in new_view.children:
+                    if isinstance(child, ui.Button):
+                        child.callback = await make_callback(child.label)
+                await safe_edit(interaction, new_output, view=new_view)
+            except Exception as e:
+                await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+        return cb
+
+    for s in sizes_small:
+        view.add_item(ui.Button(label=s, style=discord.ButtonStyle.secondary if s != puzzle_size.lower() else discord.ButtonStyle.primary,
+                                disabled=(s == puzzle_size.lower()), custom_id=f"getpb_{s}"))
+    for s in sizes_big:
+        view.add_item(ui.Button(label=s, style=discord.ButtonStyle.secondary if s != puzzle_size.lower() else discord.ButtonStyle.primary,
+                                disabled=(s == puzzle_size.lower()), custom_id=f"getpb_{s}"))
+    for child in view.children:
+        if isinstance(child, ui.Button):
+            child.callback = await make_callback(child.label)
+    return view
 
 @client.tree.command(description="get personal bests for a puzzle size")
 @app_commands.describe(
@@ -295,23 +251,9 @@ def validate_and_get_pb(pb_type: str):
     control_type="control type for filtering scores",
     pb_type="pb type to display"
 )
-@app_commands.choices(power_system=[
-    app_commands.Choice(name="modern", value="modern"),
-    app_commands.Choice(name="classic", value="classic"),
-    app_commands.Choice(name="fmc", value="fmc")
-])
-@app_commands.autocomplete(display_type=display_type_autocomplete)
-@app_commands.autocomplete(control_type=control_type_autocomplete)
-@app_commands.autocomplete(pb_type=pb_type_autocomplete)
-async def getpb(
-    interaction: discord.Interaction,
-    username: str = None,
-    puzzle_size: str = None,
-    power_system: str = "modern",
-    display_type: str = "standard",
-    control_type: str = "unique",
-    pb_type: str = "time"
-):
+@app_commands.choices(power_system=[app_commands.Choice(name="modern", value="modern"), app_commands.Choice(name="classic", value="classic"), app_commands.Choice(name="fmc", value="fmc")])
+@app_commands.autocomplete(display_type=display_type_autocomplete, control_type=control_type_autocomplete, pb_type=pb_type_autocomplete)
+async def getpb(interaction: discord.Interaction, username: str = None, puzzle_size: str = None, power_system: str = "modern", display_type: str = "standard", control_type: str = "unique", pb_type: str = "time"):
     await interaction.response.defer(ephemeral=False)
     try:
         if username is None:
@@ -319,23 +261,52 @@ async def getpb(
         if puzzle_size is None:
             channel_name = interaction.channel.name if hasattr(interaction.channel, 'name') else ""
             puzzle_size = get_puzzle_size_from_channel(channel_name)
-
-        display_id, display_name = validate_and_get_display(display_type)
-        control_id, control_name = validate_and_get_control(control_type)
-        pb_id = validate_and_get_pb(pb_type)
-
-        result = stats.get_pb(username, puzzle_size.lower(), power_system.lower(),
-                              display_type.lower(), control_type.lower(), pb_type.lower())
+        result = stats.get_pb(username, puzzle_size.lower(), power_system.lower(), display_type.lower(), control_type.lower(), pb_type.lower())
         lines = result.strip().split('\n')
         title = lines[0] if lines else "personal bests"
         details = lines[1] if len(lines) > 1 else ""
         body = "\n".join(lines[2:]) if len(lines) > 2 else ""
         output = f"**{title}**\n_{details}_\n```\n{body if body else 'no data'}\n```"
-        await interaction.followup.send(content=output)
+        view = await getpb_view(username, puzzle_size, power_system, display_type, control_type, pb_type)
+        await safe_followup(interaction, output, view=view)
     except ValueError as e:
         await interaction.followup.send(str(e), ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
+
+# ═══════════ getwr (with puzzle size buttons) ═══════════
+async def getwr_view(puzzle_size, power_system, display_type, control_type, pb_type):
+    view = ui.View(timeout=None)
+    sizes_small = ["3x3", "4x4", "5x5", "6x6", "7x7", "8x8", "9x9", "10x10"]
+    sizes_big   = ["12x12", "16x16", "20x20"]
+    async def make_callback(size):
+        async def cb(interaction: discord.Interaction):
+            await interaction.response.defer()
+            try:
+                result = stats.get_wr(size.lower(), power_system.lower(), display_type.lower(), control_type.lower(), pb_type.lower())
+                lines = result.strip().split('\n')
+                title = lines[0] if lines else "world records"
+                details = lines[1] if len(lines) > 1 else ""
+                body = "\n".join(lines[2:]) if len(lines) > 2 else ""
+                output = f"**{title}**\n_{details}_\n```\n{body if body else 'no data'}\n```"
+                new_view = await getwr_view(size, power_system, display_type, control_type, pb_type)
+                for child in new_view.children:
+                    if isinstance(child, ui.Button):
+                        child.callback = await make_callback(child.label)
+                await safe_edit(interaction, output, view=new_view)
+            except Exception as e:
+                await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+        return cb
+    for s in sizes_small:
+        view.add_item(ui.Button(label=s, style=discord.ButtonStyle.secondary if s != puzzle_size.lower() else discord.ButtonStyle.primary,
+                                disabled=(s == puzzle_size.lower()), custom_id=f"getwr_{s}"))
+    for s in sizes_big:
+        view.add_item(ui.Button(label=s, style=discord.ButtonStyle.secondary if s != puzzle_size.lower() else discord.ButtonStyle.primary,
+                                disabled=(s == puzzle_size.lower()), custom_id=f"getwr_{s}"))
+    for child in view.children:
+        if isinstance(child, ui.Button):
+            child.callback = await make_callback(child.label)
+    return view
 
 @client.tree.command(description="get world records for a puzzle size")
 @app_commands.describe(
@@ -345,18 +316,457 @@ async def getpb(
     control_type="control type for filtering scores",
     pb_type="pb type to display"
 )
+@app_commands.choices(power_system=[app_commands.Choice(name="modern", value="modern"), app_commands.Choice(name="classic", value="classic"), app_commands.Choice(name="fmc", value="fmc")])
+@app_commands.autocomplete(display_type=display_type_autocomplete, control_type=control_type_autocomplete, pb_type=pb_type_autocomplete)
+async def getwr(interaction: discord.Interaction, puzzle_size: str = None, power_system: str = "modern", display_type: str = "standard", control_type: str = "unique", pb_type: str = "time"):
+    await interaction.response.defer(ephemeral=False)
+    try:
+        if puzzle_size is None:
+            channel_name = interaction.channel.name if hasattr(interaction.channel, 'name') else ""
+            puzzle_size = get_puzzle_size_from_channel(channel_name)
+        result = stats.get_wr(puzzle_size.lower(), power_system.lower(), display_type.lower(), control_type.lower(), pb_type.lower())
+        lines = result.strip().split('\n')
+        title = lines[0] if lines else "world records"
+        details = lines[1] if len(lines) > 1 else ""
+        body = "\n".join(lines[2:]) if len(lines) > 2 else ""
+        output = f"**{title}**\n_{details}_\n```\n{body if body else 'no data'}\n```"
+        view = await getwr_view(puzzle_size, power_system, display_type, control_type, pb_type)
+        await safe_followup(interaction, output, view=view)
+    except ValueError as e:
+        await interaction.followup.send(str(e), ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
+
+# ═══════════ rank (power system buttons) – FIXED ═══════════
+async def rank_view(username, power_system, display_type, control_type, pb_type):
+    view = ui.View(timeout=None)
+    systems = ["modern", "classic", "fmc"]
+    async def make_callback(sys_label):
+        async def cb(interaction: discord.Interaction):
+            await interaction.response.defer()
+            try:
+                sys = sys_label.lower()  # <-- fix
+                result = stats.get_rank(username, sys, display_type.lower(), control_type.lower(), pb_type.lower())
+                lines = result.strip().split('\n')
+                main_line = lines[0] if lines else "no rank data"
+                output = f"```\n{main_line}\n```\n_{display_type} | {control_type} | {sys}_"
+                new_view = await rank_view(username, sys, display_type, control_type, pb_type)
+                for child in new_view.children:
+                    if isinstance(child, ui.Button):
+                        child.callback = await make_callback(child.label)
+                await safe_edit(interaction, output, view=new_view)
+            except Exception as e:
+                await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+        return cb
+    for sys in systems:
+        view.add_item(ui.Button(label=sys.capitalize(), style=discord.ButtonStyle.secondary if sys != power_system else discord.ButtonStyle.primary,
+                                disabled=(sys == power_system), custom_id=f"rank_{sys}"))
+    for child in view.children:
+        if isinstance(child, ui.Button):
+            child.callback = await make_callback(child.label)
+    return view
+
+@client.tree.command(description="get power ranking for a player")
+@app_commands.describe(username="player name (or part of it) - defaults to your discord display name",
+                       power_system="power system: modern, classic, or fmc",
+                       display_type="display type for filtering scores",
+                       control_type="control type for filtering scores",
+                       pb_type="pb type for power calculation")
+@app_commands.choices(power_system=[app_commands.Choice(name="modern", value="modern"), app_commands.Choice(name="classic", value="classic"), app_commands.Choice(name="fmc", value="fmc")])
+@app_commands.autocomplete(display_type=display_type_autocomplete, control_type=control_type_autocomplete, pb_type=pb_type_autocomplete)
+async def rank(interaction: discord.Interaction, username: str = None, power_system: str = "modern", display_type: str = "standard", control_type: str = "unique", pb_type: str = "time"):
+    await interaction.response.defer(ephemeral=False)
+    try:
+        if username is None:
+            username = interaction.user.display_name
+        result = stats.get_rank(username, power_system.lower(), display_type.lower(), control_type.lower(), pb_type.lower())
+        lines = result.strip().split('\n')
+        main_line = lines[0] if lines else "no rank data"
+        output = f"```\n{main_line}\n```\n_{display_type} | {control_type} | {power_system.lower()}_"
+        view = await rank_view(username, power_system.lower(), display_type, control_type, pb_type)
+        await safe_followup(interaction, output, view=view)
+    except ValueError as e:
+        await interaction.followup.send(str(e), ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
+
+# ═══════════ top25 (power system buttons only) – FIXED ═══════════
+async def top25_view(power_system, display_type, control_type):
+    view = ui.View(timeout=None)
+    systems = ["modern", "classic", "fmc"]
+
+    async def make_callback(sys_label):
+        async def cb(interaction: discord.Interaction):
+            await interaction.response.defer()
+            try:
+                sys = sys_label.lower()                     # <-- ensures lowercase
+                result = stats.top25(
+                    power_system=sys,
+                    display_type=display_type.lower(),
+                    control_type=control_type.lower()
+                )
+                lines = result.strip().split('\n')
+                body_lines = lines[:-1] if len(lines) > 1 and lines[-1].startswith("[") else lines
+                info_line = lines[-1] if len(lines) > 1 and lines[-1].startswith("[") else ""
+                body = "\n".join(body_lines)
+                output = f"**Top 25 Players**\n```\n{body}\n```"
+                if info_line:
+                    output += f"\n_{info_line}_"
+
+                new_view = await top25_view(sys, display_type, control_type)
+                # rebind callbacks for the new view
+                for child in new_view.children:
+                    if isinstance(child, ui.Button):
+                        child.callback = await make_callback(child.label)
+                await safe_edit(interaction, output, view=new_view)
+            except Exception as e:
+                await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+        return cb
+
+    for sys in systems:
+        view.add_item(ui.Button(
+            label=sys.capitalize(),
+            style=discord.ButtonStyle.secondary if sys != power_system else discord.ButtonStyle.primary,
+            disabled=(sys == power_system),
+            custom_id=f"top25_{sys}"
+        ))
+
+    for child in view.children:
+        if isinstance(child, ui.Button):
+            child.callback = await make_callback(child.label)
+
+    return view
+
+
+@client.tree.command(description="Show the top 25 players by power")
+@app_commands.describe(
+    power_system="Power system: modern, classic, or fmc",
+    display_type="Display type for filtering scores",
+    control_type="Control type for filtering scores"
+)
 @app_commands.choices(power_system=[
     app_commands.Choice(name="modern", value="modern"),
     app_commands.Choice(name="classic", value="classic"),
     app_commands.Choice(name="fmc", value="fmc")
 ])
-@app_commands.autocomplete(display_type=display_type_autocomplete)
-@app_commands.autocomplete(control_type=control_type_autocomplete)
-@app_commands.autocomplete(pb_type=pb_type_autocomplete)
-async def getwr(
+@app_commands.autocomplete(display_type=display_type_autocomplete, control_type=control_type_autocomplete)
+async def top25(
+    interaction: discord.Interaction,
+    power_system: str = "modern",
+    display_type: str = "standard",
+    control_type: str = "unique"
+):
+    await interaction.response.defer(ephemeral=False)
+    try:
+        result = stats.top25(
+            power_system=power_system.lower(),
+            display_type=display_type.lower(),
+            control_type=control_type.lower()
+        )
+        lines = result.strip().split('\n')
+        body_lines = lines[:-1] if len(lines) > 1 and lines[-1].startswith("[") else lines
+        info_line = lines[-1] if len(lines) > 1 and lines[-1].startswith("[") else ""
+        body = "\n".join(body_lines)
+        output = f"**Top 25 Players**\n```\n{body}\n```"
+        if info_line:
+            output += f"\n_{info_line}_"
+
+        view = await top25_view(power_system.lower(), display_type, control_type)
+        await safe_followup(interaction, output, view=view)
+
+    except ValueError as e:
+        await interaction.followup.send(str(e), ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
+
+# ═══════════ bestscores (power system buttons) – FIXED ═══════════
+async def bestscores_view(username, power_system, display_type, control_type):
+    view = ui.View(timeout=None)
+    systems = ["modern", "classic", "fmc"]
+    async def make_callback(sys_label):
+        async def cb(interaction: discord.Interaction):
+            await interaction.response.defer()
+            try:
+                sys = sys_label.lower()
+                result = stats.bestscores(username, power_system=sys, display_type=display_type.lower(), control_type=control_type.lower())
+                output = f"**Best Scores for {username}**\n```\n{result}\n```"
+                new_view = await bestscores_view(username, sys, display_type, control_type)
+                for child in new_view.children:
+                    if isinstance(child, ui.Button):
+                        child.callback = await make_callback(child.label)
+                await safe_edit(interaction, output, view=new_view)
+            except Exception as e:
+                await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+        return cb
+    for sys in systems:
+        view.add_item(ui.Button(label=sys.capitalize(), style=discord.ButtonStyle.secondary if sys != power_system else discord.ButtonStyle.primary,
+                                disabled=(sys == power_system), custom_id=f"bs_{sys}"))
+    for child in view.children:
+        if isinstance(child, ui.Button):
+            child.callback = await make_callback(child.label)
+    return view
+
+@client.tree.command(description="Show a player's best scores per category, grouped by tier")
+@app_commands.describe(username="Player name (or part of it) – defaults to your Discord display name",
+                       power_system="Power system: modern, classic, or fmc",
+                       display_type="Display type for filtering scores",
+                       control_type="Control type for filtering scores")
+@app_commands.choices(power_system=[app_commands.Choice(name="modern", value="modern"), app_commands.Choice(name="classic", value="classic"), app_commands.Choice(name="fmc", value="fmc")])
+@app_commands.autocomplete(display_type=display_type_autocomplete, control_type=control_type_autocomplete)
+async def bestscores(interaction: discord.Interaction, username: str = None, power_system: str = "modern", display_type: str = "standard", control_type: str = "unique"):
+    await interaction.response.defer(ephemeral=False)
+    try:
+        if username is None:
+            username = interaction.user.display_name
+        result = stats.bestscores(username, power_system=power_system.lower(), display_type=display_type.lower(), control_type=control_type.lower())
+        output = f"**Best Scores for {username}**\n```\n{result}\n```"
+        view = await bestscores_view(username, power_system.lower(), display_type, control_type)
+        await safe_followup(interaction, output, view=view)
+    except ValueError as e:
+        await interaction.followup.send(str(e), ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
+
+# ═══════════ numwrs (filter type buttons only – no power buttons) ═══════════
+async def numwrs_view(display_type, control_type, pb_type, filter_type, relay_type, power_system):
+    view = ui.View(timeout=None)
+    filters = ["NxM singles", "Square averages"]
+    async def make_filter_cb(ft):
+        async def cb(interaction: discord.Interaction):
+            await interaction.response.defer()
+            try:
+                result = stats.numwrs(display_type=display_type, control_type=control_type, pb_type=pb_type,
+                                      filter_type=ft, relay_type=relay_type, power_system=power_system)
+                lines = result.strip().split('\n')
+                header = "World Record Counts"
+                body_lines = []
+                info_parts = []
+                for line in lines:
+                    stripped = line.strip()
+                    if stripped.startswith("[Display:") or stripped.startswith("[Filter:"):
+                        info_parts.append(stripped)
+                    else:
+                        body_lines.append(stripped)
+                body = "\n".join(body_lines) if body_lines else "no world records found"
+                info = "\n".join(info_parts) if info_parts else ""
+                output = f"**{header}**\n```\n{body}\n```"
+                if info:
+                    output += f"\n_{info}_"
+                new_view = await numwrs_view(display_type, control_type, pb_type, ft, relay_type, power_system)
+                for child in new_view.children:
+                    if isinstance(child, ui.Button):
+                        child.callback = await make_filter_cb(child.label)
+                await safe_edit(interaction, output, view=new_view)
+            except Exception as e:
+                await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+        return cb
+    for ft in filters:
+        view.add_item(ui.Button(label=ft, style=discord.ButtonStyle.secondary if ft != filter_type else discord.ButtonStyle.primary,
+                                disabled=(ft == filter_type), custom_id=f"numwrs_filter_{ft}"))
+    for child in view.children:
+        if isinstance(child, ui.Button):
+            child.callback = await make_filter_cb(child.label)
+    return view
+
+@client.tree.command(description="count world records per player with filters")
+@app_commands.describe(display_type="display type for filtering scores",
+                       control_type="control type for filtering scores",
+                       pb_type="pb type for comparison (time, move, tps)",
+                       filter_type="'NxM singles' (default, avglen=1 any size) or 'Square averages' (NxN puzzles only)",
+                       relay_type="filter by game mode (default: Standard, or Marathon 10, x10, rel, eut, width...)",
+                       power_system="power system: modern, classic, or fmc")
+@app_commands.choices(power_system=[app_commands.Choice(name="modern", value="modern"), app_commands.Choice(name="classic", value="classic"), app_commands.Choice(name="fmc", value="fmc")])
+@app_commands.autocomplete(display_type=display_type_autocomplete, control_type=control_type_autocomplete, pb_type=pb_type_autocomplete,
+                           filter_type=filter_type_autocomplete, relay_type=relay_type_autocomplete)
+async def numwrs(interaction: discord.Interaction, display_type: str = "standard", control_type: str = "unique", pb_type: str = "time",
+                 filter_type: str = "NxM singles", relay_type: str = "Standard", power_system: str = "modern"):
+    await interaction.response.defer(ephemeral=False)
+    try:
+        canonical_relay = parse_relay_type(relay_type)
+        result = stats.numwrs(display_type=display_type, control_type=control_type, pb_type=pb_type,
+                              filter_type=filter_type, relay_type=canonical_relay, power_system=power_system)
+        lines = result.strip().split('\n')
+        header = "World Record Counts"
+        body_lines = []
+        info_parts = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("[Display:") or stripped.startswith("[Filter:"):
+                info_parts.append(stripped)
+            else:
+                body_lines.append(stripped)
+        body = "\n".join(body_lines) if body_lines else "no world records found"
+        info = "\n".join(info_parts) if info_parts else ""
+        output = f"**{header}**\n```\n{body}\n```"
+        if info:
+            output += f"\n_{info}_"
+        view = await numwrs_view(display_type, control_type, pb_type, filter_type, canonical_relay, power_system)
+        await safe_followup(interaction, output, view=view)
+    except ValueError as e:
+        await interaction.followup.send(str(e), ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
+
+# ═══════════ Updated avglen autocomplete ═══════════
+async def avglen_autocomplete(interaction, current):
+    options = ["single", "ao5", "ao12", "ao25", "ao50", "ao100",
+               "ao250", "ao500", "ao1000", "ao2500"]
+    return [app_commands.Choice(name=o, value=o) for o in options if current.lower() in o.lower()][:25]
+
+# ═══════════ LB30 – modernised view (fixed callback bug + extended avglens) ═══════════
+class LB30View(ui.View):
+    def __init__(self, puzzle_size, relay_type, avglen, display_type, control_type, pb_type):
+        super().__init__(timeout=None)
+        self.puzzle_size = puzzle_size
+        self.relay_type = relay_type
+        self.avglen = avglen
+        self.display_type = display_type
+        self.control_type = control_type
+        self.pb_type = pb_type
+
+        # ---------- Avglen buttons ----------
+        avglens = ["single", "ao5", "ao12", "ao25", "ao50", "ao100",
+                   "ao250", "ao500", "ao1000", "ao2500"]
+        for a in avglens:
+            style = discord.ButtonStyle.secondary if a != avglen else discord.ButtonStyle.primary
+            btn = ui.Button(label=a, style=style, disabled=(a == avglen))
+            btn.callback = self.make_avglen_callback(a)   # now synchronous factory
+            self.add_item(btn)
+
+        # ---------- Puzzle size dropdown ----------
+        sizes = [f"{i}x{i}" for i in range(2, 21)]
+        options = [
+            discord.SelectOption(label=s, value=s, default=(s == puzzle_size.lower()))
+            for s in sizes
+        ]
+        self.puzzle_select = ui.Select(placeholder="Choose puzzle size", options=options)
+        self.puzzle_select.callback = self.select_puzzle_callback
+        self.add_item(self.puzzle_select)
+
+        # ---------- Relay dropdown ----------
+        relay_options_labels = [
+            "Standard",
+            "2-N relay",
+            "Everything-up-to relay",
+            "Width relay",
+            "Height relay",
+            "BLD",
+            "x3",
+            "x5",
+            "x10",
+            "x20",
+            "x25",
+            "x42",
+            "x50",
+            "x100"
+        ]
+        relay_options = [
+            discord.SelectOption(label=rel, value=rel, default=(rel == relay_type))
+            for rel in relay_options_labels
+        ]
+        self.relay_select = ui.Select(placeholder="Choose relay type", options=relay_options)
+        self.relay_select.callback = self.select_relay_callback
+        self.add_item(self.relay_select)
+
+    # synchronous factory returning the async callback
+    def make_avglen_callback(self, new_avglen):
+        async def callback(interaction: discord.Interaction):
+            await interaction.response.defer()
+            try:
+                result = stats.lb30(
+                    puzzle_size=self.puzzle_size.lower(),
+                    relay_type=self.relay_type,
+                    avglen=new_avglen,
+                    display_type=self.display_type.lower(),
+                    control_type=self.control_type.lower(),
+                    pb_type=self.pb_type.lower()
+                )
+                lines = result.strip().split('\n')
+                body_lines = lines[:-1] if len(lines) > 1 and lines[-1].startswith("[") else lines
+                info_line = lines[-1] if len(lines) > 1 and lines[-1].startswith("[") else ""
+                body = "\n".join(body_lines)
+                output = f"**Top 30 – {self.puzzle_size} {self.relay_type} {new_avglen}**\n```\n{body}\n```"
+                if info_line:
+                    output += f"\n_{info_line}_"
+                new_view = LB30View(self.puzzle_size, self.relay_type, new_avglen,
+                                    self.display_type, self.control_type, self.pb_type)
+                await safe_edit(interaction, output, view=new_view)
+            except Exception as e:
+                await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+        return callback
+
+    async def select_puzzle_callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        new_puzzle = self.puzzle_select.values[0]
+        try:
+            result = stats.lb30(
+                puzzle_size=new_puzzle.lower(),
+                relay_type=self.relay_type,
+                avglen=self.avglen,
+                display_type=self.display_type.lower(),
+                control_type=self.control_type.lower(),
+                pb_type=self.pb_type.lower()
+            )
+            lines = result.strip().split('\n')
+            body_lines = lines[:-1] if len(lines) > 1 and lines[-1].startswith("[") else lines
+            info_line = lines[-1] if len(lines) > 1 and lines[-1].startswith("[") else ""
+            body = "\n".join(body_lines)
+            output = f"**Top 30 – {new_puzzle} {self.relay_type} {self.avglen}**\n```\n{body}\n```"
+            if info_line:
+                output += f"\n_{info_line}_"
+            new_view = LB30View(new_puzzle, self.relay_type, self.avglen,
+                                self.display_type, self.control_type, self.pb_type)
+            await safe_edit(interaction, output, view=new_view)
+        except Exception as e:
+            await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+
+    async def select_relay_callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        new_relay = self.relay_select.values[0]
+        try:
+            result = stats.lb30(
+                puzzle_size=self.puzzle_size.lower(),
+                relay_type=new_relay,
+                avglen=self.avglen,
+                display_type=self.display_type.lower(),
+                control_type=self.control_type.lower(),
+                pb_type=self.pb_type.lower()
+            )
+            lines = result.strip().split('\n')
+            body_lines = lines[:-1] if len(lines) > 1 and lines[-1].startswith("[") else lines
+            info_line = lines[-1] if len(lines) > 1 and lines[-1].startswith("[") else ""
+            body = "\n".join(body_lines)
+            output = f"**Top 30 – {self.puzzle_size} {new_relay} {self.avglen}**\n```\n{body}\n```"
+            if info_line:
+                output += f"\n_{info_line}_"
+            new_view = LB30View(self.puzzle_size, new_relay, self.avglen,
+                                self.display_type, self.control_type, self.pb_type)
+            await safe_edit(interaction, output, view=new_view)
+        except Exception as e:
+            await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+
+
+@client.tree.command(description="Top 30 scores for a puzzle/relay/avglen, shown as % of #1")
+@app_commands.describe(
+    puzzle_size="Puzzle size (e.g., 4x4, 3x3) – defaults to channel name or 4x4",
+    relay_type="Game mode (Standard, Marathon 10, x10, rel, eut, width, bld …)",
+    avglen="Average length: single, ao5, ao12, ao25, ao50, ao100, ao250, ao500, ao1000, ao2500",
+    display_type="Display type for filtering scores",
+    control_type="Control type for filtering scores",
+    pb_type="PB type (time, move, tps)"
+)
+@app_commands.autocomplete(
+    relay_type=relay_type_autocomplete,
+    avglen=avglen_autocomplete,
+    display_type=display_type_autocomplete,
+    control_type=control_type_autocomplete,
+    pb_type=pb_type_autocomplete
+)
+async def lb30(
     interaction: discord.Interaction,
     puzzle_size: str = None,
-    power_system: str = "modern",
+    relay_type: str = "Standard",
+    avglen: str = "single",
     display_type: str = "standard",
     control_type: str = "unique",
     pb_type: str = "time"
@@ -367,64 +777,61 @@ async def getwr(
             channel_name = interaction.channel.name if hasattr(interaction.channel, 'name') else ""
             puzzle_size = get_puzzle_size_from_channel(channel_name)
 
-        display_id, display_name = validate_and_get_display(display_type)
-        control_id, control_name = validate_and_get_control(control_type)
-        pb_id = validate_and_get_pb(pb_type)
+        canonical_relay = parse_relay_type(relay_type)
 
-        result = stats.get_wr(puzzle_size.lower(), power_system.lower(),
-                              display_type.lower(), control_type.lower(), pb_type.lower())
+        result = stats.lb30(
+            puzzle_size=puzzle_size.lower(),
+            relay_type=canonical_relay,
+            avglen=avglen.lower(),
+            display_type=display_type.lower(),
+            control_type=control_type.lower(),
+            pb_type=pb_type.lower()
+        )
         lines = result.strip().split('\n')
-        title = lines[0] if lines else "world records"
-        details = lines[1] if len(lines) > 1 else ""
-        body = "\n".join(lines[2:]) if len(lines) > 2 else ""
-        output = f"**{title}**\n_{details}_\n```\n{body if body else 'no data'}\n```"
-        await interaction.followup.send(content=output)
+        body_lines = lines[:-1] if len(lines) > 1 and lines[-1].startswith("[") else lines
+        info_line = lines[-1] if len(lines) > 1 and lines[-1].startswith("[") else ""
+        body = "\n".join(body_lines)
+        output = f"**Top 30 – {puzzle_size} {canonical_relay} {avglen}**\n```\n{body}\n```"
+        if info_line:
+            output += f"\n_{info_line}_"
+
+        view = LB30View(puzzle_size, canonical_relay, avglen, display_type, control_type, pb_type)
+        await safe_followup(interaction, output, view=view)
+
     except ValueError as e:
         await interaction.followup.send(str(e), ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
 
-@client.tree.command(description="get power ranking for a player")
-@app_commands.describe(
-    username="player name (or part of it) - defaults to your discord display name",
-    power_system="power system: modern, classic, or fmc",
-    display_type="display type for filtering scores",
-    control_type="control type for filtering scores",
-    pb_type="pb type for power calculation"
-)
-@app_commands.choices(power_system=[
-    app_commands.Choice(name="modern", value="modern"),
-    app_commands.Choice(name="classic", value="classic"),
-    app_commands.Choice(name="fmc", value="fmc")
-])
-@app_commands.autocomplete(display_type=display_type_autocomplete)
-@app_commands.autocomplete(control_type=control_type_autocomplete)
-@app_commands.autocomplete(pb_type=pb_type_autocomplete)
-async def rank(
-    interaction: discord.Interaction,
-    username: str = None,
-    power_system: str = "modern",
-    display_type: str = "standard",
-    control_type: str = "unique",
-    pb_type: str = "time"
-):
-    await interaction.response.defer(ephemeral=False)
-    try:
-        if username is None:
-            username = interaction.user.display_name
-        display_id, display_name = validate_and_get_display(display_type)
-        control_id, control_name = validate_and_get_control(control_type)
-        pb_id = validate_and_get_pb(pb_type)
-        result = stats.get_rank(username, power_system.lower(),
-                                display_type.lower(), control_type.lower(), pb_type.lower())
-        lines = result.strip().split('\n')
-        main_line = lines[0] if lines else "no rank data"
-        output = f"```\n{main_line}\n```\n_{display_name} | {control_name} | {power_system.lower()}_"
-        await interaction.followup.send(content=output)
-    except ValueError as e:
-        await interaction.followup.send(str(e), ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
+# ═══════════ getreq (puzzle size buttons) – unchanged from previous fix ═══════════
+async def getreq_view(tier_name, power_system, puzzle_size):
+    view = ui.View(timeout=None)
+    sizes_small = ["3x3", "4x4", "5x5", "6x6", "7x7", "8x8", "9x9", "10x10"]
+    sizes_big   = ["12x12", "16x16", "20x20"]
+    async def make_callback(size):
+        async def cb(interaction: discord.Interaction):
+            await interaction.response.defer()
+            try:
+                result = stats.get_req(tier_name.lower(), power_system.lower(), size.lower())
+                output = f"```\n{result}\n```\n_{power_system.lower()} | {size}_"
+                new_view = await getreq_view(tier_name, power_system, size)
+                for child in new_view.children:
+                    if isinstance(child, ui.Button):
+                        child.callback = await make_callback(child.label)
+                await safe_edit(interaction, output, view=new_view)
+            except Exception as e:
+                await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+        return cb
+    for s in sizes_small:
+        style = discord.ButtonStyle.secondary if s != puzzle_size.lower() else discord.ButtonStyle.primary
+        view.add_item(ui.Button(label=s, style=style, disabled=(s == puzzle_size.lower()), custom_id=f"getreq_{s}"))
+    for s in sizes_big:
+        style = discord.ButtonStyle.secondary if s != puzzle_size.lower() else discord.ButtonStyle.primary
+        view.add_item(ui.Button(label=s, style=style, disabled=(s == puzzle_size.lower()), custom_id=f"getreq_{s}"))
+    for child in view.children:
+        if isinstance(child, ui.Button):
+            child.callback = await make_callback(child.label)
+    return view
 
 @client.tree.command(description="get tier requirements for a puzzle size")
 @app_commands.describe(
@@ -450,265 +857,32 @@ async def getreq(
             puzzle_size = get_puzzle_size_from_channel(channel_name)
         result = stats.get_req(tier_name.lower(), power_system.lower(), puzzle_size.lower())
         output = f"```\n{result}\n```\n_{power_system.lower()} | {puzzle_size}_"
-        await interaction.followup.send(content=output)
+        view = await getreq_view(tier_name, power_system, puzzle_size)
+        await safe_followup(interaction, output, view=view)
     except Exception as e:
         await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
 
-# ====================== NUMWRS ======================
-
-@client.tree.command(description="count world records per player with filters")
-@app_commands.describe(
-    display_type="display type for filtering scores",
-    control_type="control type for filtering scores",
-    pb_type="pb type for comparison (time, move, tps)",
-    filter_type="'NxM singles' (default, avglen=1 any size) or 'Square averages' (NxN puzzles only)",
-    relay_type="filter by game mode (default: Standard, or Marathon 10, x10, rel, eut, width...)",
-    power_system="power system: modern, classic, or fmc"
-)
-@app_commands.choices(power_system=[
-    app_commands.Choice(name="modern", value="modern"),
-    app_commands.Choice(name="classic", value="classic"),
-    app_commands.Choice(name="fmc", value="fmc")
-])
-@app_commands.autocomplete(display_type=display_type_autocomplete)
-@app_commands.autocomplete(control_type=control_type_autocomplete)
-@app_commands.autocomplete(pb_type=pb_type_autocomplete)
-@app_commands.autocomplete(filter_type=filter_type_autocomplete)
-@app_commands.autocomplete(relay_type=relay_type_autocomplete)
-async def numwrs(
-    interaction: discord.Interaction,
-    display_type: str = "standard",
-    control_type: str = "unique",
-    pb_type: str = "time",
-    filter_type: str = "NxM singles",
-    relay_type: str = "Standard",
-    power_system: str = "modern"
-):
-    await interaction.response.defer(ephemeral=False)
-    try:
-        # Parse relay_type to canonical form (support "x10", "rel", etc.)
-        canonical_relay = parse_relay_type(relay_type)
-
-        result = stats.numwrs(
-            display_type=display_type,
-            control_type=control_type,
-            pb_type=pb_type,
-            filter_type=filter_type,
-            relay_type=canonical_relay,
-            power_system=power_system
-        )
-        lines = result.strip().split('\n')
-        header = "World Record Counts"
-        body_lines = []
-        info_parts = []
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith("[Display:") or stripped.startswith("[Filter:"):
-                info_parts.append(stripped)
-            else:
-                body_lines.append(stripped)
-        body = "\n".join(body_lines) if body_lines else "no world records found"
-        info = "\n".join(info_parts) if info_parts else ""
-        output = f"**{header}**\n```\n{body}\n```"
-        if info:
-            output += f"\n_{info}_"
-        await interaction.followup.send(content=output)
-    except ValueError as e:
-        await interaction.followup.send(str(e), ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
-
-# ====================== TOP25 ======================
-
-@client.tree.command(description="Show the top 25 players by power")
-@app_commands.describe(
-    power_system="Power system: modern, classic, or fmc",
-    display_type="Display type for filtering scores",
-    control_type="Control type for filtering scores",
-)
-@app_commands.choices(power_system=[
-    app_commands.Choice(name="modern", value="modern"),
-    app_commands.Choice(name="classic", value="classic"),
-    app_commands.Choice(name="fmc", value="fmc"),
-])
-@app_commands.autocomplete(display_type=display_type_autocomplete)
-@app_commands.autocomplete(control_type=control_type_autocomplete)
-async def top25(
-    interaction: discord.Interaction,
-    power_system: str = "modern",
-    display_type: str = "standard",
-    control_type: str = "unique",
-):
-    await interaction.response.defer(ephemeral=False)
-    try:
-        result = stats.top25(
-            power_system=power_system.lower(),
-            display_type=display_type.lower(),
-            control_type=control_type.lower(),
-        )
-        lines = result.strip().split('\n')
-        body_lines = lines[:-1] if len(lines) > 1 and lines[-1].startswith("[") else lines
-        info_line = lines[-1] if len(lines) > 1 and lines[-1].startswith("[") else ""
-
-        max_chunk_size = 1900
-        chunks = []
-        current_chunk = []
-        current_length = 0
-        for line in body_lines:
-            line_length = len(line) + 1
-            if current_length + line_length > max_chunk_size and current_chunk:
-                chunks.append("\n".join(current_chunk))
-                current_chunk = [line]
-                current_length = line_length
-            else:
-                current_chunk.append(line)
-                current_length += line_length
-        if current_chunk:
-            chunks.append("\n".join(current_chunk))
-
-        header = "**Top 25 Players**\n"
-        for i, chunk in enumerate(chunks):
-            if i == 0:
-                output = f"{header}```\n{chunk}\n```"
-            else:
-                output = f"```\n{chunk}\n```"
-            if i == len(chunks) - 1 and info_line:
-                output += f"\n_{info_line}_"
-            if i == 0:
-                await interaction.followup.send(content=output)
-            else:
-                await interaction.followup.send(content=output, ephemeral=False)
-    except ValueError as e:
-        await interaction.followup.send(str(e), ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
-
-# ====================== BESTSCORES / WORSTSCORES ======================
-
-@client.tree.command(description="Show a player's best scores per category, grouped by tier")
-@app_commands.describe(
-    username="Player name (or part of it) – defaults to your Discord display name",
-    power_system="Power system: modern, classic, or fmc",
-    display_type="Display type for filtering scores",
-    control_type="Control type for filtering scores",
-)
-@app_commands.choices(power_system=[
-    app_commands.Choice(name="modern", value="modern"),
-    app_commands.Choice(name="classic", value="classic"),
-    app_commands.Choice(name="fmc", value="fmc"),
-])
-@app_commands.autocomplete(display_type=display_type_autocomplete)
-@app_commands.autocomplete(control_type=control_type_autocomplete)
-async def bestscores(
-    interaction: discord.Interaction,
-    username: str = None,
-    power_system: str = "modern",
-    display_type: str = "standard",
-    control_type: str = "unique",
-):
-    await interaction.response.defer(ephemeral=False)
-    try:
-        if username is None:
-            username = interaction.user.display_name
-        result = stats.bestscores(username, power_system=power_system.lower(),
-                                  display_type=display_type.lower(),
-                                  control_type=control_type.lower())
-        output = f"**Best Scores for {username}**\n```\n{result}\n```"
-        await interaction.followup.send(content=output)
-    except ValueError as e:
-        await interaction.followup.send(str(e), ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
-
-# ====================== LB30 ======================
-
-@client.tree.command(description="Top 30 scores for a puzzle/relay/avglen, shown as % of #1")
-@app_commands.describe(
-    puzzle_size="Puzzle size (e.g., 4x4, 3x3) – defaults to channel name or 4x4",
-    relay_type="Game mode (Standard, Marathon 10, x10, rel, eut, width, bld …)",
-    avglen="Average length: single, ao5, ao12, ao25, ao50, ao100",
-    display_type="Display type for filtering scores",
-    control_type="Control type for filtering scores",
-    pb_type="PB type (time, move, tps)",
-)
-@app_commands.autocomplete(relay_type=relay_type_autocomplete)
-@app_commands.autocomplete(avglen=avglen_autocomplete)
-@app_commands.autocomplete(display_type=display_type_autocomplete)
-@app_commands.autocomplete(control_type=control_type_autocomplete)
-@app_commands.autocomplete(pb_type=pb_type_autocomplete)
-async def lb30(
-    interaction: discord.Interaction,
-    puzzle_size: str = None,
-    relay_type: str = "Standard",
-    avglen: str = "single",
-    display_type: str = "standard",
-    control_type: str = "unique",
-    pb_type: str = "time",
-):
-    await interaction.response.defer(ephemeral=False)
-    try:
-        if puzzle_size is None:
-            channel_name = interaction.channel.name if hasattr(interaction.channel, 'name') else ""
-            puzzle_size = get_puzzle_size_from_channel(channel_name)
-
-        canonical_relay = parse_relay_type(relay_type)
-
-        result = stats.lb30(
-            puzzle_size=puzzle_size.lower(),
-            relay_type=canonical_relay,
-            avglen=avglen.lower(),
-            display_type=display_type.lower(),
-            control_type=control_type.lower(),
-            pb_type=pb_type.lower(),
-        )
-
-        lines = result.strip().split('\n')
-        body_lines = lines[:-1] if len(lines) > 1 and lines[-1].startswith("[") else lines
-        info_line = lines[-1] if len(lines) > 1 and lines[-1].startswith("[") else ""
-        body = "\n".join(body_lines)
-        output = f"**Top 30 – {puzzle_size} {canonical_relay} {avglen}**\n```\n{body}\n```"
-        if info_line:
-            output += f"\n_{info_line}_"
-        await interaction.followup.send(content=output)
-
-    except ValueError as e:
-        await interaction.followup.send(str(e), ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"error: {str(e)}", ephemeral=True)   
-
+# ====================== UPDATEWEB (unchanged) ======================
 @client.tree.command(description="Update Slidysim Web scores data")
 async def updateweb(interaction: discord.Interaction):
     global updateweb_running
-
     await interaction.response.defer(ephemeral=False)
-
     try:
         if updateweb_running:
-            await interaction.followup.send(
-                "⚠️ Web update is already in progress. Please wait.",
-                ephemeral=True
-            )
+            await interaction.followup.send("⚠️ Web update is already in progress. Please wait.", ephemeral=True)
             return
-
         script_path = os.getenv("UPDATEWEB_SCRIPT_PATH")
         if not script_path or not os.path.exists(script_path):
             await interaction.followup.send("Error: script path invalid.", ephemeral=True)
             return
-
         updateweb_running = True
-
-        # 🥚 Start thinking message
         msg = await interaction.followup.send("🤖 thinking about eggs :zzz:")
-
         start_time = timemodule.time()
-
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUNBUFFERED"] = "1"
-
         script_dir = os.path.dirname(script_path)
         script_name = os.path.basename(script_path)
-
         process = await asyncio.create_subprocess_exec(
             "python", "-u", script_name,
             stdout=asyncio.subprocess.PIPE,
@@ -716,8 +890,6 @@ async def updateweb(interaction: discord.Interaction):
             cwd=script_dir,
             env=env
         )
-
-        # 🥚 Animate while running
         async def animate():
             states = [
                 ":zzz: (web update is taking about 40 seconds) :zzz:",
@@ -729,42 +901,33 @@ async def updateweb(interaction: discord.Interaction):
                 await msg.edit(content=states[i % len(states)])
                 i += 1
                 await asyncio.sleep(10)
-
         anim_task = asyncio.create_task(animate())
-
         stdout, stderr = await process.communicate()
-
         anim_task.cancel()
-
         elapsed_time = timemodule.time() - start_time
         minutes = int(elapsed_time // 60)
         seconds = elapsed_time % 60
         time_str = f"{minutes}m {seconds:.1f}s" if minutes > 0 else f"{seconds:.1f}s"
-
         if process.returncode != 0:
             error_msg = stderr.decode('utf-8') if stderr else "Unknown error"
             await msg.edit(content=f"❌ Web update failed after {time_str}\n{error_msg[:1000]}")
             return
-
-        # 🥚 Final success message (edit instead of new send)
         await msg.edit(content=f""":egg: Web backup updated successfully! (took {time_str})
 
 **Leaderboard URL:** https://slidysim.github.io/lb
 **Web-only scores:** https://slidysim.github.io/archive""")
-
     except Exception as e:
         await interaction.followup.send(f"❌ Error running web update: {str(e)}")
-
     finally:
         updateweb_running = False
+
+# ====================== ADMIN COMMANDS (unchanged, only included for completeness) ======================
 
 @client.tree.command(description="[Admin only] Get best marathon splits for NxM puzzles in slidysim exe")
 @app_commands.describe(puzzle_size="Puzzle size in NxM format (e.g. 3x3)")
 async def admin_marathons_exe(interaction: discord.Interaction, puzzle_size: str):
-    """Get the best cumulative times for each split across all marathons of specified puzzle size"""
     await interaction.response.defer(ephemeral=False)
     try:
-        # Check if the user is authorized
         if interaction.user.id != YOUR_USER_ID:
             await interaction.followup.send(
                 "You are not authorized to use this command.",
@@ -772,7 +935,6 @@ async def admin_marathons_exe(interaction: discord.Interaction, puzzle_size: str
             )
             return
 
-        # Parse puzzle size
         try:
             width, height = map(int, puzzle_size.lower().split('x'))
             if width <= 0 or height <= 0:
@@ -793,13 +955,12 @@ async def admin_marathons_exe(interaction: discord.Interaction, puzzle_size: str
             )
             return
 
-        # Format the results
         description = "```\n"
         description += f"{'Split':<6}{'Time':<10}{'From':<14}{'Date':<12}\n"
         description += "-" * 49 + "\n"
         
         for x_num in sorted(best_splits.keys()):
-            if x_num > 42:  # Limit to x42 max
+            if x_num > 42:
                 continue
             
             split = best_splits[x_num]
@@ -811,7 +972,6 @@ async def admin_marathons_exe(interaction: discord.Interaction, puzzle_size: str
             )
         description += "```"
 
-        # Create embed
         embed = discord.Embed(
             title=f"Best Marathon Splits for {puzzle_size}",
             description=description,
@@ -833,10 +993,8 @@ async def admin_marathons_exe(interaction: discord.Interaction, puzzle_size: str
 )
 async def admin_playtime_exe(interaction: discord.Interaction, timeframe: str = "all"):
     try:
-        # Defer the response to prevent timeout
         await interaction.response.defer(ephemeral=False)
         
-        # Check if the user is authorized
         if interaction.user.id != YOUR_USER_ID:
             await interaction.followup.send(
                 "You are not authorized to use this command.",
@@ -847,7 +1005,6 @@ async def admin_playtime_exe(interaction: discord.Interaction, timeframe: str = 
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
 
-        # Determine time filter condition
         params = []
         usehours = False
         since = None
@@ -857,7 +1014,6 @@ async def admin_playtime_exe(interaction: discord.Interaction, timeframe: str = 
             now = datetime.now()
             
             if timeframe.isdigit():
-                # timeframe is a number of hours
                 hours = int(timeframe)
                 usehours = True
                 since = now - timedelta(hours=hours)
@@ -869,15 +1025,12 @@ async def admin_playtime_exe(interaction: discord.Interaction, timeframe: str = 
             elif timeframe.lower() == "month":
                 since = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
-            # Convert to milliseconds
             since_ms = int(since.timestamp() * 1000)
             params.append(since_ms)
         else:
-            # Use arbitrarily large default timestamp values for "all" case
-            since_ms = 0  # Beginning of Unix epoch
+            since_ms = 0
             params.append(since_ms)
 
-        # Query 1: Get attempts and playtime
         attempts_query = """
             SELECT 
                 ss.width,
@@ -894,7 +1047,6 @@ async def admin_playtime_exe(interaction: discord.Interaction, timeframe: str = 
         attempts_results = {f"{row[0]}x{row[1]}": {"hours": row[2], "attempts": row[3], "width": row[0], "height": row[1]} 
                            for row in cursor.fetchall()}
 
-        # Query 2: Get solves (completed ones)
         solves_query = """
             SELECT 
                 ss.width,
@@ -911,7 +1063,6 @@ async def admin_playtime_exe(interaction: discord.Interaction, timeframe: str = 
         cursor.execute(solves_query, params)
         solves_results = {f"{row[0]}x{row[1]}": row[2] for row in cursor.fetchall()}
 
-        # Query 3: Get skips
         skips_query = """
             SELECT 
                 width,
@@ -925,7 +1076,6 @@ async def admin_playtime_exe(interaction: discord.Interaction, timeframe: str = 
         cursor.execute(skips_query, params)
         skips_results = {f"{row[0]}x{row[1]}": row[2] for row in cursor.fetchall()}
 
-        # Combine all data
         all_puzzles = set(attempts_results.keys()) | set(solves_results.keys()) | set(skips_results.keys())
         
         combined_results = []
@@ -943,7 +1093,6 @@ async def admin_playtime_exe(interaction: discord.Interaction, timeframe: str = 
                 "skips": skips
             })
         
-        # Sort by hours and get top 20
         combined_results.sort(key=lambda x: x["hours"], reverse=True)
         top_results = combined_results[:20]
 
@@ -951,7 +1100,6 @@ async def admin_playtime_exe(interaction: discord.Interaction, timeframe: str = 
             await interaction.followup.send("No playtime data found.", ephemeral=True)
             return
 
-        # Get total playtime across ALL puzzles
         total_query = """
             SELECT ROUND(SUM(ss.time) / 3600000.0, 3) AS total_hours
             FROM single_solves ss
@@ -973,16 +1121,13 @@ async def admin_playtime_exe(interaction: discord.Interaction, timeframe: str = 
         else:
             timeframe = timeframe.capitalize() if timeframe.lower() != "all" else "All Time"
 
-        # Create embed
         embed = discord.Embed(
             title=f"🕹️ SlidySim Playtime Summary ({timeframe})",
             color=discord.Color.blurple()
         )
 
-        # Format header row
         table_lines = [" Size |  Time  |Attempts| Solves | Skips", "------|--------|--------|--------|-------"]
 
-        # Format each row
         for row in top_results:
             total_minutes = int(row["hours"] * 60)
             h = total_minutes // 60
@@ -991,10 +1136,8 @@ async def admin_playtime_exe(interaction: discord.Interaction, timeframe: str = 
             size = f"{row['width']}x{row['height']}".ljust(5)
             table_lines.append(f"{size} | {time_str:<6} | {row['attempts']:<6} | {row['solves']:<6} | {row['skips']}")
 
-        # Join into a code block
         embed.description = "```\n" + "\n".join(table_lines) + "\n```"
         
-        # Add total playtime as footer
         embed.set_footer(text=f"Total playtime across ALL puzzles: {total_time_str}")
 
         await interaction.followup.send(embed=embed)
@@ -1029,7 +1172,6 @@ async def admin_pbhistory_exe(
     await interaction.response.defer(ephemeral=False)
     
     try:
-        # Check if the user is authorized
         if interaction.user.id != YOUR_USER_ID:
             await interaction.followup.send(
                 "You are not authorized to use this command.",
@@ -1037,7 +1179,6 @@ async def admin_pbhistory_exe(
             )
             return
         
-        # Parse size
         try:
             width, height = map(int, size.lower().split('x'))
         except:
@@ -1047,16 +1188,13 @@ async def admin_pbhistory_exe(
             )
             return
         
-        # Connect to SQLite database
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         
-        # Calculate timestamp cutoff if hours_limit is provided
         timestamp_cutoff = None
         if hours_limit is not None:
             timestamp_cutoff = int(timemodule.time() - (hours_limit * 3600)) * 1000
         
-        # Build the base query (same filters as getpb, but we fetch ALL qualifying solves)
         query = """
             SELECT 
                 a.time,
@@ -1078,12 +1216,10 @@ async def admin_pbhistory_exe(
         
         params = [width, height]
         
-        # Add hours_limit filter if provided
         if timestamp_cutoff is not None:
             query += " AND b.timestamp >= ?"
             params.append(timestamp_cutoff)
         
-        # Add optional PB-consideration filters (these define which solves are eligible to become PBs)
         if time_limit is not None:
             query += " AND a.time < ?"
             params.append(int(time_limit * 1000))
@@ -1096,7 +1232,6 @@ async def admin_pbhistory_exe(
             query += " AND a.tps > ?"
             params.append(tps_limit * 1000)
         
-        # Always order by timestamp ASC so we can track PB progression chronologically
         query += " ORDER BY b.timestamp ASC"
         
         cursor.execute(query, params)
@@ -1115,15 +1250,13 @@ async def admin_pbhistory_exe(
             )
             return
         
-        # Determine how to compare for the chosen pbtype
         if pbtype in ["time", "moves"]:
             best_value = float('inf')
             is_better = lambda val: val < best_value
-        else:  # tps
+        else:
             best_value = float('-inf')
             is_better = lambda val: val > best_value
         
-        # Walk through solves in chronological order and record only new PBs
         pb_history = []
         for time_ms, moves_ms, tps_ms, ts_ms in rows:
             val = time_ms if pbtype == "time" else moves_ms if pbtype == "moves" else tps_ms
@@ -1131,7 +1264,6 @@ async def admin_pbhistory_exe(
                 pb_history.append((time_ms, moves_ms, tps_ms, ts_ms))
                 best_value = val
         
-        # Build the markdown table (exactly as requested)
         table_lines = [
             " Time (s) | Moves |  TPS   | Date (UTC)",
             "----------|-------|--------|--------------"
@@ -1144,7 +1276,6 @@ async def admin_pbhistory_exe(
             date_str = datetime.fromtimestamp(ts_ms / 1000).strftime('%Y-%m-%d %H:%M:%S')
             table_lines.append(f"{time_s:>9.3f} | {moves:>5} | {tps:>6.3f} | {date_str}")
         
-        # Prepare filter metadata (exactly as requested)
         filter_info = []
         if time_limit is not None:
             filter_info.append(f"Time < {time_limit}s")
@@ -1157,7 +1288,6 @@ async def admin_pbhistory_exe(
         
         metadata = f"Filters: {', '.join(filter_info) if filter_info else 'None'}\n"
         
-        # Create embed (styled similarly to playtime + getpb)
         embed = discord.Embed(
             title=f"📜 PB History ({pbtype}) — {width}x{height}",
             color=discord.Color.gold()
@@ -1195,7 +1325,6 @@ async def admin_getpb_exe(
     await interaction.response.defer(ephemeral=False)
     
     try:
-        # Check if the user is authorized
         if interaction.user.id != YOUR_USER_ID:
             await interaction.followup.send(
                 "You are not authorized to use this command.",
@@ -1203,7 +1332,6 @@ async def admin_getpb_exe(
             )
             return
         
-        # Parse size
         try:
             width, height = map(int, size.lower().split('x'))
         except:
@@ -1213,16 +1341,13 @@ async def admin_getpb_exe(
             )
             return
         
-        # Connect to SQLite database
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         
-        # Calculate timestamp cutoff if hours_limit is provided
         timestamp_cutoff = None
         if hours_limit is not None:
             timestamp_cutoff = int(timemodule.time() - (hours_limit * 3600)) * 1000
         
-        # Build the query based on parameters
         query = """
             SELECT 
                 a.id,
@@ -1251,12 +1376,10 @@ async def admin_getpb_exe(
         
         params = [width, height]
         
-        # Add hours_limit filter if provided
         if timestamp_cutoff is not None:
             query += " AND b.timestamp >= ?"
             params.append(timestamp_cutoff)
             
-        # Add optional filters
         if time_limit is not None:
             query += " AND a.time < ?"
             params.append(int(time_limit * 1000))
@@ -1265,7 +1388,6 @@ async def admin_getpb_exe(
             query += " AND a.moves < ?"
             params.append(moves_limit * 1000)
         
-        # Add ordering based on pbtype
         if pbtype == "time":
             query += " ORDER BY a.time ASC LIMIT 1"
         elif pbtype == "moves":
@@ -1288,14 +1410,12 @@ async def admin_getpb_exe(
             )
             return
             
-        # Get column names
         column_names = [
             'id', 'time', 'moves', 'tps', 'scramble', 'solution', 
             'move_times_start_id', 'move_times_end_id', 'timestamp', 'width', 'height'
         ]
         row_map = dict(zip(column_names, solve_row))
         
-        # Get move times
         starting_point = row_map['move_times_start_id']
         ending_point = row_map['move_times_end_id']
         cursor.execute(
@@ -1304,7 +1424,6 @@ async def admin_getpb_exe(
         )
         sequence = [row[0] for row in cursor.fetchall()]
         
-        # Format information
         width = row_map['width']
         height = row_map['height']
         time = row_map['time'] / 1000
@@ -1314,12 +1433,11 @@ async def admin_getpb_exe(
         solution = row_map['solution']
         timestamp = datetime.fromtimestamp(row_map['timestamp'] / 1000).strftime('%Y-%m-%d %H:%M:%S')
         
-        # Generate SlidySim URL
         slidy_url = "https://slidysim.github.io/replay?r=" + compress_array_to_string([solution, row_map['tps'], scramble, sequence])
         splits_data = getsplits(slidy_url)
 
         url_length = len(slidy_url)
-        extra_note = ""  # Only used if >1950
+        extra_note = ""
 
         if url_length <= 512:
             final_link = slidy_url
@@ -1334,7 +1452,6 @@ async def admin_getpb_exe(
             use_button = True
             extra_note = "*Replay may take a minute to activate.*"
 
-        # Create embed
         pb_type_display = {
             "time": f"Fastest Time: {time:.3f}s",
             "moves": f"Fewest Moves: {moves}",
@@ -1343,7 +1460,6 @@ async def admin_getpb_exe(
 
         time_window_info = f" (last {hours_limit} hours)" if hours_limit else ""
         
-        # Add filter information
         filter_info = []
         if time_limit is not None:
             filter_info.append(f"Time < {time_limit}s")
@@ -1392,7 +1508,6 @@ async def admin_getpb_exe(
 async def admin_latest_exe(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=False)
     try:
-        # Check if the user is authorized
         if interaction.user.id != YOUR_USER_ID:
             await interaction.followup.send(
                 "You are not authorized to use this command.",
@@ -1400,16 +1515,13 @@ async def admin_latest_exe(interaction: discord.Interaction):
             )
             return
         
-        # Connect to SQLite database
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         
-        # Get column info
         cursor.execute("PRAGMA table_info(single_solves)")
         columns = cursor.fetchall()
         column_names = [column[1] for column in columns]
         
-        # Get latest solve
         cursor.execute("SELECT * FROM single_solves ORDER BY id DESC LIMIT 1")
         highest_single_solve_row = cursor.fetchone()
         
@@ -1419,12 +1531,10 @@ async def admin_latest_exe(interaction: discord.Interaction):
             
         row_map = dict(zip(column_names, highest_single_solve_row))
         
-        # Get move times
         starting_point = row_map['move_times_start_id']
         cursor.execute(f"SELECT time FROM move_times WHERE id >= {starting_point}")
         sequence = [row[0] for row in cursor.fetchall()]
         
-        # Format information
         width = row_map['width']
         height = row_map['height']
         time = row_map['time'] / 1000
@@ -1433,13 +1543,12 @@ async def admin_latest_exe(interaction: discord.Interaction):
         scramble = row_map['scramble']
         solution = row_map['solution']
         
-        # Generate SlidySim URL
         slidy_url = "https://slidysim.github.io/replay?r=" + compress_array_to_string([solution, row_map['tps'], scramble, sequence])
         splits_data = getsplits(slidy_url)
 
         url_length = len(slidy_url)
         timestamp = str(int(timemodule.time()))
-        extra_note = ""  # Only used if >1950
+        extra_note = ""
 
         if url_length <= 512:
             final_link = slidy_url
@@ -1470,7 +1579,6 @@ async def admin_latest_exe(interaction: discord.Interaction):
             await interaction.followup.send(embed=embed, view=view, ephemeral=False)
         else:
             await interaction.followup.send(content=f"# [View on SlidySim]({final_link})", embed=embed, ephemeral=False)
-
 
         
     except Exception as e:
@@ -1508,7 +1616,6 @@ async def splits(
             await interaction.followup.send("You must upload a file or provide text.", ephemeral=True)
             return
 
-        # Get splits result
         splits_data = getsplits(file_content)
         if splits_data == "Invalid splits data":
             await interaction.followup.send("Invalid splits data in the provided input.", ephemeral=True)
@@ -1539,7 +1646,7 @@ async def admin_replay(interaction: discord.Interaction, file: discord.Attachmen
         await interaction.response.send_message("Please upload a .txt file.", ephemeral=True)
         return
 
-    await interaction.response.defer(ephemeral=False)  # Defer to handle long processing
+    await interaction.response.defer(ephemeral=False)
 
     timestamp = str(int(timemodule.time()))
     filename = f"{timestamp}.txt"
