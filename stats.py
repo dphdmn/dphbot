@@ -706,7 +706,7 @@ def lb30(puzzle_size="4x4", relay_type="Standard", avglen="single",
     entries = [s for s in merged_data
                if s['width'] == N and s['height'] == M
                and s['gameMode'] == game_mode and s['avglen'] == avglen_num
-               and get_primary(s) not in (None, -1, 0)]
+               ]
     if not entries:
         return f"No scores found for {puzzle_size} {game_mode} {avglen_str}."
     reverse_sort = (pb_type == "tps")
@@ -715,8 +715,6 @@ def lb30(puzzle_size="4x4", relay_type="Standard", avglen="single",
     if not top:
         return "No valid scores."
     best_val = get_primary(top[0])
-    if best_val == 0:
-        return "Best score is 0, cannot compute percentages."
     rows = []
     for rank, s in enumerate(top, 1):
         player = s.get('nameFilter', 'Unknown')
@@ -724,12 +722,18 @@ def lb30(puzzle_size="4x4", relay_type="Standard", avglen="single",
         primary_str = fmt_primary(val)
         secondary_str = fmt_secondary(s)
         score_disp = f"{primary_str} {secondary_str}"
-        if pb_type == "tps":
-            perc = (val / best_val) * 100
+        
+        if best_val == 0:
+            perc_str = "100.000%" if rank == 1 else "0.000%"
         else:
-            perc = (best_val / val) * 100
-        perc_str = f"{perc:.3f}%"
+            if pb_type == "tps":
+                perc = (val / best_val) * 100
+            else:
+                perc = (best_val / val) * 100
+            perc_str = f"{perc:.3f}%"
+        
         rows.append([str(rank), player, score_disp, perc_str])
+
     lines = _pad_columns(rows)
     info = f"[{puzzle_size} | {game_mode} | {avglen_str} | Display: {display_name} | Control: {control_name} | PB: {pb_type}]"
     return "\n".join(lines) + "\n" + info
