@@ -11,6 +11,7 @@ then calculate power rankings from the resulting file.
 import sys
 import json
 import math
+import os
 import subprocess
 from power_data import *
 
@@ -29,7 +30,7 @@ def update_merged_leaderboard(display_type, control_type, pb_type):
         sys.exit(1)
     print(result.stdout)
 
-def load_merged_scores(filepath="merged_leaderboard.txt"):
+def load_merged_scores(filepath):
     """Load merged scores from a JSON file."""
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
@@ -185,9 +186,10 @@ if __name__ == '__main__':
     # Step 1: Update merged leaderboard by calling fetch.py
     update_merged_leaderboard(display_type, control_type, pb_type)
 
-    # Step 2: Load merged scores from file
-    print(f"Loading merged scores from merged_leaderboard.txt...")
-    all_scores = load_merged_scores("merged_leaderboard.txt")
+    # Step 2: Load merged scores from combination-specific file
+    combo_file = f"merged_leaderboards/{display_type}_{control_type}_{pb_type}.txt"
+    print(f"Loading merged scores from {combo_file}...")
+    all_scores = load_merged_scores(combo_file)
     print(f"Loaded {len(all_scores)} total merged scores.")
 
     # Step 3: Build best-per-player-per-category structure

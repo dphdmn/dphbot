@@ -30,7 +30,8 @@ def _run_power(power_system="modern", display_type="Standard", control_type="uni
     subprocess.run(cmd, check=True)
     with open("power.txt", "r", encoding="utf-8") as f:
         power_data = json.load(f)
-    with open("merged_leaderboard.txt", "r", encoding="utf-8") as f:
+    combo_file = f"merged_leaderboards/{display_id}_{control_id}_{pb_id}.txt"
+    with open(combo_file, "r", encoding="utf-8") as f:
         merged_data = json.load(f)
     return power_data, merged_data, display_name, control_name
 

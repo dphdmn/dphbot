@@ -613,7 +613,12 @@ async def avglen_autocomplete(interaction, current):
                "ao250", "ao500", "ao1000", "ao2500"]
     return [app_commands.Choice(name=o, value=o) for o in options if current.lower() in o.lower()][:25]
 
-# ═══════════ LB30 – modernised view (fixed callback bug + extended avglens) ═══════════
+# ═══════════ Updated pb_type autocomplete ═══════════
+async def pb_type_autocomplete(interaction, current):
+    options = ["time", "move", "tps", "fmc", "fmc mtm"]
+    return [app_commands.Choice(name=o, value=o) for o in options if current.lower() in o.lower()][:25]
+
+# ═══════════ LB30 – modernised view (extended avglens + pb dropdown) ═══════════
 class LB30View(ui.View):
     def __init__(self, puzzle_size, relay_type, avglen, display_type, control_type, pb_type):
         super().__init__(timeout=None)
@@ -630,7 +635,7 @@ class LB30View(ui.View):
         for a in avglens:
             style = discord.ButtonStyle.secondary if a != avglen else discord.ButtonStyle.primary
             btn = ui.Button(label=a, style=style, disabled=(a == avglen))
-            btn.callback = self.make_avglen_callback(a)   # now synchronous factory
+            btn.callback = self.make_avglen_callback(a)
             self.add_item(btn)
 
         # ---------- Puzzle size dropdown ----------
@@ -667,6 +672,16 @@ class LB30View(ui.View):
         self.relay_select = ui.Select(placeholder="Choose relay type", options=relay_options)
         self.relay_select.callback = self.select_relay_callback
         self.add_item(self.relay_select)
+
+        # ---------- PB type dropdown ----------
+        pb_options_labels = ["time", "move", "tps", "fmc", "fmc mtm"]
+        pb_options = [
+            discord.SelectOption(label=pb, value=pb, default=(pb.lower() == pb_type.lower()))
+            for pb in pb_options_labels
+        ]
+        self.pb_select = ui.Select(placeholder="Choose PB type", options=pb_options)
+        self.pb_select.callback = self.select_pb_callback
+        self.add_item(self.pb_select)
 
     # synchronous factory returning the async callback
     def make_avglen_callback(self, new_avglen):
@@ -745,6 +760,31 @@ class LB30View(ui.View):
         except Exception as e:
             await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
 
+    async def select_pb_callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        new_pb_type = self.pb_select.values[0]
+        try:
+            result = stats.lb30(
+                puzzle_size=self.puzzle_size.lower(),
+                relay_type=self.relay_type,
+                avglen=self.avglen,
+                display_type=self.display_type.lower(),
+                control_type=self.control_type.lower(),
+                pb_type=new_pb_type.lower()
+            )
+            lines = result.strip().split('\n')
+            body_lines = lines[:-1] if len(lines) > 1 and lines[-1].startswith("[") else lines
+            info_line = lines[-1] if len(lines) > 1 and lines[-1].startswith("[") else ""
+            body = "\n".join(body_lines)
+            output = f"**Top 30 – {self.puzzle_size} {self.relay_type} {self.avglen}**\n```\n{body}\n```"
+            if info_line:
+                output += f"\n_{info_line}_"
+            new_view = LB30View(self.puzzle_size, self.relay_type, self.avglen,
+                                self.display_type, self.control_type, new_pb_type)
+            await safe_edit(interaction, output, view=new_view)
+        except Exception as e:
+            await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+
 
 @client.tree.command(description="Top 30 scores for a puzzle/relay/avglen, shown as % of #1")
 @app_commands.describe(
@@ -753,7 +793,7 @@ class LB30View(ui.View):
     avglen="Average length: single, ao5, ao12, ao25, ao50, ao100, ao250, ao500, ao1000, ao2500",
     display_type="Display type for filtering scores",
     control_type="Control type for filtering scores",
-    pb_type="PB type (time, move, tps)"
+    pb_type="PB type (time, move, tps, fmc, fmc mtm)"
 )
 @app_commands.autocomplete(
     relay_type=relay_type_autocomplete,

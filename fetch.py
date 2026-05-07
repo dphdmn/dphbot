@@ -233,6 +233,15 @@ def get_archive_scores(display_type, control_type, pb_type):
 
 # ---------- helper functions ----------
 
+# ---------- configuration ----------
+MERGED_FOLDER = "merged_leaderboards"
+
+
+def get_combo_filename(display_type, control_type, pb_type):
+    """Generate filename for a specific combination."""
+    return f"{display_type}_{control_type}_{pb_type}.txt"
+
+
 def get_latest_log_mtime(logs_dir):
     """Get the modification time of the most recent log file in the logs directory."""
     if not os.path.exists(logs_dir):
@@ -249,50 +258,25 @@ def get_latest_log_mtime(logs_dir):
     return latest_time if latest_time > 0 else None
 
 
-def should_fetch_scores(logs_dir, info_file, merged_file):
-    """Check if we need to fetch scores based on log file changes."""
-    # Get the latest log modification time
+def should_fetch_combo(logs_dir, combo_path):
+    """Check if we need to fetch this combination based on log file changes."""
     latest_log_mtime = get_latest_log_mtime(logs_dir)
     if latest_log_mtime is None:
         print("No log files found. Proceeding with fetch.")
         return True
     
-    # Check if merged_leaderboard.txt exists
-    if not os.path.exists(merged_file):
-        print("No merged leaderboard file found. Proceeding with fetch.")
+    if not os.path.exists(combo_path):
+        print(f"No existing file for this combination. Proceeding with fetch.")
         return True
     
-    # Check if last_fetch_info.txt exists
-    if os.path.exists(info_file):
-        try:
-            with open(info_file, 'r', encoding='utf-8') as f:
-                info = json.load(f)
-                last_mtime = info.get('last_log_mtime', 0)
-                
-                if last_mtime == latest_log_mtime:
-                    print(f"Log files unchanged since last fetch (mtime: {latest_log_mtime}). Skipping fetch.")
-                    return False
-                else:
-                    print(f"Log files changed. Last mtime: {last_mtime}, Current mtime: {latest_log_mtime}")
-        except (json.JSONDecodeError, KeyError) as e:
-            print(f"Error reading last_fetch_info.txt: {e}. Proceeding with fetch.")
+    combo_mtime = os.path.getmtime(combo_path)
+    if combo_mtime >= latest_log_mtime:
+        print(f"Combination file is newer than latest log (combo: {combo_mtime}, log: {latest_log_mtime}). Skipping fetch.")
+        return False
     else:
-        print("No last_fetch_info.txt found. Proceeding with fetch.")
-    
-    return True
+        print(f"Log files changed since last combo fetch. Log mtime: {latest_log_mtime}, Combo mtime: {combo_mtime}")
+        return True
 
-
-def save_fetch_info(info_file, latest_log_mtime):
-    """Save the fetch info for next run."""
-    info = {
-        'last_log_mtime': latest_log_mtime,
-        'last_fetch_time': time.time()
-    }
-    with open(info_file, 'w', encoding='utf-8') as f:
-        json.dump(info, f, ensure_ascii=False)
-
-
-# ---------- main script ----------
 
 def main():
     if len(sys.argv) != 4:
@@ -307,7 +291,7 @@ def main():
         print("All arguments must be integers.", file=sys.stderr)
         sys.exit(1)
 
-    # Convert numbers to their string representations (needed for output fields)
+    # Convert numbers to their string representations
     display_type_str = DISPLAY_TYPE_MAP.get(display_type, str(display_type))
     pb_type_str = PB_TYPE_MAP.get(pb_type, str(pb_type))
     control_type_str = CONTROL_TYPE_MAP.get(control_type, str(control_type))
@@ -317,12 +301,13 @@ def main():
 
     # Configure paths
     logs_dir = r"C:\coding\slidywebdata\logs"
-    info_file = "last_fetch_info.txt"
-    merged_file = "merged_leaderboard.txt"
+    os.makedirs(MERGED_FOLDER, exist_ok=True)
+    combo_filename = get_combo_filename(display_type, control_type, pb_type)
+    combo_path = os.path.join(MERGED_FOLDER, combo_filename)
     
-    # Check if we need to fetch scores
-    if not should_fetch_scores(logs_dir, info_file, merged_file):
-        print("Using existing merged leaderboard data. Exiting cleanly.")
+    # Check if we need to fetch scores for this combination
+    if not should_fetch_combo(logs_dir, combo_path):
+        print(f"Using existing file: {combo_path}")
         sys.exit(0)
 
     # 1. Fetch live scores
@@ -343,7 +328,7 @@ def main():
         print(f"Warning: Could not load archive data ({e}). Proceeding without archive.", file=sys.stderr)
         web_scores = []
 
-    # 3. Merge (if both exist, otherwise just use live)
+    # 3. Merge
     if web_scores:
         merged = merge_web_pbs(live_scores, web_scores)
         print(f"Merged total: {len(merged)} entries (live + web).")
@@ -352,17 +337,10 @@ def main():
             s['isWeb'] = False
         merged = live_scores
 
-    # 4. Output to file
-    output_path = "merged_leaderboard.txt"
-    with open(output_path, 'w', encoding='utf-8') as f:
+    # 4. Output to combination-specific file
+    with open(combo_path, 'w', encoding='utf-8') as f:
         json.dump(merged, f, ensure_ascii=False)
-    print(f"Written merged leaderboard to {output_path}")
-    
-    # 5. Save fetch info for next run
-    latest_log_mtime = get_latest_log_mtime(logs_dir)
-    if latest_log_mtime is not None:
-        save_fetch_info(info_file, latest_log_mtime)
-        print(f"Updated last_fetch_info.txt with log mtime: {latest_log_mtime}")
+    print(f"Written merged leaderboard to {combo_path}")
 
 if __name__ == "__main__":
     main()
