@@ -621,9 +621,13 @@ def _player_scores(username, power_system, display_type, control_type, best=True
     get_primary, is_better, fmt_primary, fmt_secondary = _get_metric_functions(pb_type)
 
     user_scores = {}
+    actual_username = None  # Track the actual username found in scores
     for s in merged_data:
         if username.lower() not in s['nameFilter'].lower():
             continue
+        # Store the actual username from the first matching score
+        if actual_username is None:
+            actual_username = s['nameFilter']
         key = (s['width'], s['height'], s['gameMode'], s['avglen'])
         if key not in user_scores:
             user_scores[key] = s
@@ -692,6 +696,10 @@ def _player_scores(username, power_system, display_type, control_type, best=True
     entries.sort(key=lambda e: (-e[0], -e[1] if best else e[1]))
 
     output_lines = []
+    # Add the username as the first line if we found one
+    if actual_username:
+        output_lines.append(f"Best Scores for {actual_username}")
+    
     current_tier_name = None
     tier_lines = []
     for tier_ord, ahead, W, H, gameMode, avglen, val, score, tier_name, next_limit in entries:
@@ -713,7 +721,7 @@ def _player_scores(username, power_system, display_type, control_type, best=True
 
         puzzle_str = f"{W}x{H}"
         ahead_str = f"{ahead:+.2f}%"
-        tier_lines.append([puzzle_str, cat_id, primary_str, goal_str, ahead_str])
+        tier_lines.append([puzzle_str + " " + cat_id, primary_str, goal_str, ahead_str])
 
     if tier_lines:
         output_lines.extend(_pad_columns(tier_lines))

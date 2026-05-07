@@ -524,27 +524,83 @@ async def top25(
 async def bestscores_view(username, power_system, display_type, control_type):
     view = ui.View(timeout=None)
     systems = ["modern", "classic", "fmc"]
+
     async def make_callback(sys_label):
         async def cb(interaction: discord.Interaction):
             await interaction.response.defer()
             try:
                 sys = sys_label.lower()
-                result = stats.bestscores(username, power_system=sys, display_type=display_type.lower(), control_type=control_type.lower())
-                output = f"**Best Scores for {username}**\n```\n{result}\n```"
+                result = stats.bestscores(
+                    username,
+                    power_system=sys,
+                    display_type=display_type.lower(),
+                    control_type=control_type.lower()
+                )
+
+                lines = result.strip().split('\n')
+
+                ansi_lines = []
+
+                for line in lines:
+                    parts = line.split('|')
+
+                    if len(parts) >= 4:
+                        pct_raw = parts[-1].strip().replace('%', '')
+
+                        try:
+                            pct_val = float(pct_raw)
+
+                            color_code = _get_ansi_color_for_pctBest(pct_val)
+
+                            bold = "\u001b[1;" if pct_val >= 0 else "\u001b[0;"
+                            reset = "\u001b[0;0m"
+
+                            sign = "+" if pct_val >= 0 else "-"
+                            num = abs(pct_val)
+
+                            if num < 10:
+                                pct_str = f"{sign} {num:.2f}%"
+                            else:
+                                pct_str = f"{sign}{num:.2f}%"
+
+                            colored_pct = f"{bold}{color_code}m{pct_str}{reset}"
+
+                            parts[-1] = f" {colored_pct} "
+                            ansi_lines.append('|'.join(parts))
+
+                        except ValueError:
+                            ansi_lines.append(line)
+                    else:
+                        ansi_lines.append(line)
+
+                body = "\n".join(ansi_lines) if ansi_lines else "no data"
+                output = f"```ansi\n{body}\n```"
+
                 new_view = await bestscores_view(username, sys, display_type, control_type)
+
                 for child in new_view.children:
                     if isinstance(child, ui.Button):
                         child.callback = await make_callback(child.label)
+
                 await safe_edit(interaction, output, view=new_view)
+
             except Exception as e:
                 await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+
         return cb
+
     for sys in systems:
-        view.add_item(ui.Button(label=sys.capitalize(), style=discord.ButtonStyle.secondary if sys != power_system else discord.ButtonStyle.primary,
-                                disabled=(sys == power_system), custom_id=f"bs_{sys}"))
+        view.add_item(ui.Button(
+            label=sys.capitalize(),
+            style=discord.ButtonStyle.secondary if sys != power_system else discord.ButtonStyle.primary,
+            disabled=(sys == power_system),
+            custom_id=f"bs_{sys}"
+        ))
+
     for child in view.children:
         if isinstance(child, ui.Button):
             child.callback = await make_callback(child.label)
+
     return view
 
 @client.tree.command(description="Show a player's best scores per category, grouped by tier")
@@ -559,10 +615,56 @@ async def bestscores(interaction: discord.Interaction, username: str = None, pow
     try:
         if username is None:
             username = interaction.user.display_name
-        result = stats.bestscores(username, power_system=power_system.lower(), display_type=display_type.lower(), control_type=control_type.lower())
-        output = f"**Best Scores for {username}**\n```\n{result}\n```"
+        
+        result = stats.bestscores(
+            username, 
+            power_system=power_system.lower(), 
+            display_type=display_type.lower(), 
+            control_type=control_type.lower()
+        )
+
+        # Apply the same ANSI formatting as the view callback
+        lines = result.strip().split('\n')
+        ansi_lines = []
+
+        for line in lines:
+            parts = line.split('|')
+
+            if len(parts) >= 4:
+                pct_raw = parts[-1].strip().replace('%', '')
+
+                try:
+                    pct_val = float(pct_raw)
+
+                    color_code = _get_ansi_color_for_pctBest(pct_val)
+
+                    bold = "\u001b[1;" if pct_val >= 0 else "\u001b[0;"
+                    reset = "\u001b[0;0m"
+
+                    sign = "+" if pct_val >= 0 else "-"
+                    num = abs(pct_val)
+
+                    if num < 10:
+                        pct_str = f"{sign} {num:.2f}%"
+                    else:
+                        pct_str = f"{sign}{num:.2f}%"
+
+                    colored_pct = f"{bold}{color_code}m{pct_str}{reset}"
+
+                    parts[-1] = f" {colored_pct} "
+                    ansi_lines.append('|'.join(parts))
+
+                except ValueError:
+                    ansi_lines.append(line)
+            else:
+                ansi_lines.append(line)
+
+        body = "\n".join(ansi_lines) if ansi_lines else "no data"
+        output = f"```ansi\n{body}\n```"
+
         view = await bestscores_view(username, power_system.lower(), display_type, control_type)
         await safe_followup(interaction, output, view=view)
+        
     except ValueError as e:
         await interaction.followup.send(str(e), ephemeral=True)
     except Exception as e:
@@ -958,6 +1060,19 @@ def _get_ansi_color_for_pct(pct: float) -> str:
         return "35"   # slight negative
     else:
         return "31"   # strong negative
+        
+def _get_ansi_color_for_pctBest(pct: float) -> str:
+    # positive override
+    if pct > -2:
+        return "32"   # green
+    elif pct > -4:
+        return "34"   # blue (slight negative)
+    elif pct > -6:
+        return "36"   # cyan (mild negative)
+    elif pct > -10:
+        return "35"   # magenta (strong negative)
+    else:
+        return "31"   # red (extreme negative)        
 
 async def compare_view(username1, username2, power_system, display_type, control_type):
     view = ui.View(timeout=None)
@@ -1040,7 +1155,6 @@ async def compare_view(username1, username2, power_system, display_type, control
 
     return view
 
-
 @client.tree.command(description="Compare two players' scores across all categories")
 @app_commands.describe(
     username1="First player name (or part of it)",
@@ -1074,7 +1188,7 @@ async def compare(
         lines = result.strip().split('\n')
         header = lines[0] if lines else "Comparison"
         
-        # Parse lines and add ANSI colors to percentages
+        # Parse lines and add ANSI colors to percentages - MATCHING VIEW CODE
         ansi_lines = []
         info_line = ""
         for line in lines[1:]:
@@ -1083,19 +1197,33 @@ async def compare(
             else:
                 parts = line.split('|')
                 if len(parts) >= 3:
-                    pct_str = parts[2].strip()
+                    pct_str = parts[2].strip().replace('%', '')
+
                     try:
-                        pct_val = float(pct_str.replace('%', ''))
+                        pct_val = float(pct_str)
+
                         color_code = _get_ansi_color_for_pct(pct_val)
-                        if abs(pct_val) >= 40:
+
+                        if abs(pct_val) >= 15:
                             bold = "\u001b[1;"
-                            reset = "\u001b[0;0m"
                         else:
                             bold = "\u001b[0;"
-                            reset = "\u001b[0;0m"
+
+                        reset = "\u001b[0;0m"
+
+                        sign = "+" if pct_val >= 0 else "-"
+                        num = abs(pct_val)
+
+                        if num < 10:
+                            pct_str = f"{sign} {num:.2f}%"
+                        else:
+                            pct_str = f"{sign}{num:.2f}%"
+
                         colored_pct = f"{bold}{color_code}m{pct_str}{reset}"
+
                         parts[2] = f" {colored_pct} "
                         ansi_lines.append('|'.join(parts))
+
                     except ValueError:
                         ansi_lines.append(line)
                 else:
