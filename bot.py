@@ -192,18 +192,59 @@ async def safe_edit(interaction: discord.Interaction, content: str, view=None):
         await interaction.edit_original_response(content=content, view=view)
 
 # ═══════════ help command ═══════════
-@client.tree.command(description="List all available commands (non-admin)")
+class HelpMenuView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=120)
+        self.commands = [cmd for cmd in client.tree.get_commands() if "[Admin only]" not in cmd.description]
+        
+        # Just add all command buttons
+        for i, cmd in enumerate(self.commands):
+            label = f"/{cmd.name}"[:80]
+            button = discord.ui.Button(
+                label=label,
+                style=discord.ButtonStyle.primary,
+                custom_id=f"help_cmd_{i}"
+            )
+            button.callback = self.make_command_callback(i)
+            self.add_item(button)
+    
+    def make_command_callback(self, index):
+        async def callback(interaction: discord.Interaction):
+            cmd = self.commands[index]
+            description = cmd.description or "No description available"
+            
+            params_text = ""
+            if hasattr(cmd, 'parameters') and cmd.parameters:
+                for param in cmd.parameters:
+                    if param.name != "interaction":  # skip internal param
+                        param_desc = param.description or "No description"
+                        required = " (required)" if param.required else " (optional)"
+                        params_text += f"• `{param.name}`{required}: {param_desc}\n"
+            
+            embed = discord.Embed(
+                title=f"/{cmd.name}",
+                description=description,
+                color=0x5865F2
+            )
+            if params_text:
+                embed.add_field(name="Parameters", value=params_text, inline=False)
+            
+            await interaction.response.edit_message(embed=embed, view=self)
+        return callback
+    
+    async def close_callback(self, interaction: discord.Interaction):
+        await interaction.message.delete()
+
+
+@client.tree.command(description="Show interactive help menu with clickable commands")
 async def help(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True)
-    commands = client.tree.get_commands()
-    public = [cmd for cmd in commands if "[Admin only]" not in cmd.description]
-    if not public:
-        await interaction.followup.send("No public commands found.", ephemeral=True)
-        return
-    embed = discord.Embed(title="Available Commands", color=0x5865F2)
-    for cmd in public:
-        embed.add_field(name=f"/{cmd.name}", value=cmd.description or "No description", inline=False)
-    await interaction.followup.send(embed=embed, ephemeral=True)
+    view = HelpMenuView()
+    embed = discord.Embed(
+        title="📚 Help Menu",
+        description="Click a command to see details.",
+        color=0x5865F2
+    )
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 # ═══════════ getpb (with puzzle size buttons) ═══════════
 async def getpb_view(username, puzzle_size, power_system, display_type, control_type, pb_type):
