@@ -943,6 +943,177 @@ async def getreq(
     except Exception as e:
         await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
 
+# ═══════════ compare command (with ANSI color gradient) ═══════════
+
+def _get_ansi_color_for_pct(pct: float) -> str:
+    if pct >= 10:
+        return "32"   # strong positive
+    elif pct >= 5:
+        return "36"   # positive
+    elif pct >= 1:
+        return "34"   # slight positive
+    elif pct > -1:
+        return "37"   # neutral
+    elif pct > -5:
+        return "35"   # slight negative
+    else:
+        return "31"   # strong negative
+
+async def compare_view(username1, username2, power_system, display_type, control_type):
+    view = ui.View(timeout=None)
+    systems = ["modern", "classic", "fmc"]
+    
+    async def make_callback(sys_label):
+        async def cb(interaction: discord.Interaction):
+            await interaction.response.defer()
+            try:
+                sys = sys_label.lower()
+                result = stats.compare(username1, username2, power_system=sys, display_type=display_type.lower(), control_type=control_type.lower())
+                lines = result.strip().split('\n')
+                header = lines[0] if lines else "Comparison"
+                
+                ansi_lines = []
+                info_line = ""
+                for line in lines[1:]:
+                    if line.startswith("[Power:"):
+                        info_line = line
+                    else:
+                        parts = line.split('|')
+
+                        if len(parts) >= 3:
+                            pct_str = parts[2].strip().replace('%', '')
+
+                            try:
+                                pct_val = float(pct_str)
+
+                                color_code = _get_ansi_color_for_pct(pct_val)
+
+                                if abs(pct_val) >= 15:
+                                    bold = "\u001b[1;"
+                                else:
+                                    bold = "\u001b[0;"
+
+                                reset = "\u001b[0;0m"
+
+                                sign = "+" if pct_val >= 0 else "-"
+                                num = abs(pct_val)
+
+                                if num < 10:
+                                    pct_str = f"{sign} {num:.2f}%"
+                                else:
+                                    pct_str = f"{sign}{num:.2f}%"
+
+                                colored_pct = f"{bold}{color_code}m{pct_str}{reset}"
+
+                                parts[2] = f" {colored_pct} "
+                                ansi_lines.append('|'.join(parts))
+
+                            except ValueError:
+                                ansi_lines.append(line)
+                        else:
+                            ansi_lines.append(line)
+                
+                body = "\n".join(ansi_lines) if ansi_lines else "no common scores found"
+                output = f"**{header}**\n```ansi\n{body}\n```"
+                if info_line:
+                    output += f"\n_{info_line}_"
+                new_view = await compare_view(username1, username2, sys, display_type, control_type)
+                for child in new_view.children:
+                    if isinstance(child, ui.Button):
+                        child.callback = await make_callback(child.label)
+                await safe_edit(interaction, output, view=new_view)
+            except Exception as e:
+                await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+        return cb
+
+    for sys in systems:
+        view.add_item(ui.Button(
+            label=sys.capitalize(),
+            style=discord.ButtonStyle.secondary if sys != power_system else discord.ButtonStyle.primary,
+            disabled=(sys == power_system),
+            custom_id=f"compare_{sys}"
+        ))
+
+    for child in view.children:
+        if isinstance(child, ui.Button):
+            child.callback = await make_callback(child.label)
+
+    return view
+
+
+@client.tree.command(description="Compare two players' scores across all categories")
+@app_commands.describe(
+    username1="First player name (or part of it)",
+    username2="Second player name (or part of it)",
+    power_system="Power system: modern, classic, or fmc",
+    display_type="Display type for filtering scores",
+    control_type="Control type for filtering scores"
+)
+@app_commands.choices(power_system=[
+    app_commands.Choice(name="modern", value="modern"),
+    app_commands.Choice(name="classic", value="classic"),
+    app_commands.Choice(name="fmc", value="fmc")
+])
+@app_commands.autocomplete(display_type=display_type_autocomplete, control_type=control_type_autocomplete)
+async def compare(
+    interaction: discord.Interaction,
+    username1: str,
+    username2: str,
+    power_system: str = "modern",
+    display_type: str = "standard",
+    control_type: str = "unique"
+):
+    await interaction.response.defer(ephemeral=False)
+    try:
+        result = stats.compare(
+            username1, username2,
+            power_system=power_system.lower(),
+            display_type=display_type.lower(),
+            control_type=control_type.lower()
+        )
+        lines = result.strip().split('\n')
+        header = lines[0] if lines else "Comparison"
+        
+        # Parse lines and add ANSI colors to percentages
+        ansi_lines = []
+        info_line = ""
+        for line in lines[1:]:
+            if line.startswith("[Power:"):
+                info_line = line
+            else:
+                parts = line.split('|')
+                if len(parts) >= 3:
+                    pct_str = parts[2].strip()
+                    try:
+                        pct_val = float(pct_str.replace('%', ''))
+                        color_code = _get_ansi_color_for_pct(pct_val)
+                        if abs(pct_val) >= 40:
+                            bold = "\u001b[1;"
+                            reset = "\u001b[0;0m"
+                        else:
+                            bold = "\u001b[0;"
+                            reset = "\u001b[0;0m"
+                        colored_pct = f"{bold}{color_code}m{pct_str}{reset}"
+                        parts[2] = f" {colored_pct} "
+                        ansi_lines.append('|'.join(parts))
+                    except ValueError:
+                        ansi_lines.append(line)
+                else:
+                    ansi_lines.append(line)
+        
+        body = "\n".join(ansi_lines) if ansi_lines else "no common scores found"
+        output = f"**{header}**\n```ansi\n{body}\n```"
+        if info_line:
+            output += f"\n_{info_line}_"
+
+        view = await compare_view(username1, username2, power_system.lower(), display_type, control_type)
+        await safe_followup(interaction, output, view=view)
+
+    except ValueError as e:
+        await interaction.followup.send(str(e), ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
+
 # ====================== UPDATEWEB (unchanged) ======================
 @client.tree.command(description="Update Slidysim Web scores data")
 async def updateweb(interaction: discord.Interaction):

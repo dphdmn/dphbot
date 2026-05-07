@@ -586,6 +586,31 @@ def top25(power_system="modern", display_type="Standard", control_type="unique")
 #  REWORKED bestscores / worstscores
 # ============================================================
 
+
+def _strip_trailing_zeros(s):
+    """Remove unnecessary trailing zeros from a formatted time string.
+    e.g. '0.480' -> '0.48', '42.000' -> '42', '1:35.000' -> '1:35'"""
+    if '.' in s:
+        if ':' in s:
+            minutes, seconds = s.split(':', 1)
+            if '.' in seconds:
+                sec_int, sec_frac = seconds.split('.', 1)
+                sec_frac = sec_frac.rstrip('0')
+                if sec_frac:
+                    seconds = f"{sec_int}.{sec_frac}"
+                else:
+                    seconds = sec_int
+            s = f"{minutes}:{seconds}"
+        else:
+            int_part, frac_part = s.split('.', 1)
+            frac_part = frac_part.rstrip('0')
+            if frac_part:
+                s = f"{int_part}.{frac_part}"
+            else:
+                s = int_part
+    return s
+
+
 def _player_scores(username, power_system, display_type, control_type, best=True):
     if power_system == "fmc":
         pb_type = "move"
@@ -640,31 +665,56 @@ def _player_scores(username, power_system, display_type, control_type, best=True
                 break
         if achieved_tier is None:
             achieved_tier = tiers[0]
+
         limit = achieved_tier['times'][idx]
         if limit == 0:
             continue
-        ahead = (limit - val) / limit * 100
-        entries.append((tier_order_map[achieved_tier['name']], ahead, W, H, gameMode, avglen, val, score, achieved_tier['name']))
+
+        tier_idx = tier_order_map[achieved_tier['name']]
+
+        # FIX: always set next_limit
+        if tier_idx == len(tiers) - 1:
+            # Highest tier – show how far ahead, target = current tier requirement
+            ahead = (limit - val) / limit * 100
+            next_limit = limit
+        else:
+            next_tier = tiers[tier_idx + 1]
+            next_limit = next_tier['times'][idx]
+            if next_limit == 0:
+                continue
+            ahead = (next_limit - val) / next_limit * 100
+
+        entries.append((
+            tier_order_map[achieved_tier['name']], ahead,
+            W, H, gameMode, avglen, val, score, achieved_tier['name'], next_limit
+        ))
 
     entries.sort(key=lambda e: (-e[0], -e[1] if best else e[1]))
 
     output_lines = []
     current_tier_name = None
     tier_lines = []
-    for tier_ord, ahead, W, H, gameMode, avglen, val, score, tier_name in entries:
+    for tier_ord, ahead, W, H, gameMode, avglen, val, score, tier_name, next_limit in entries:
         if tier_name != current_tier_name:
             if tier_lines:
                 output_lines.extend(_pad_columns(tier_lines))
                 tier_lines = []
             current_tier_name = tier_name
             output_lines.append(f"\n=== {tier_name} ===")
+
         cat_id = get_category_id(W, H, gameMode, avglen)
         primary_str = fmt_primary(val)
-        secondary_str = fmt_secondary(score)
-        score_disp = f"{primary_str} {secondary_str}"
+
+        tier_idx = tier_order_map[tier_name]
+        if tier_idx == len(tiers) - 1:
+            goal_str = _strip_trailing_zeros(fmt_primary(next_limit))
+        else:
+            goal_str = "→" + _strip_trailing_zeros(fmt_primary(next_limit))
+
         puzzle_str = f"{W}x{H}"
         ahead_str = f"{ahead:+.2f}%"
-        tier_lines.append([puzzle_str, cat_id, score_disp, ahead_str])
+        tier_lines.append([puzzle_str, cat_id, primary_str, goal_str, ahead_str])
+
     if tier_lines:
         output_lines.extend(_pad_columns(tier_lines))
 
@@ -739,12 +789,116 @@ def lb30(puzzle_size="4x4", relay_type="Standard", avglen="single",
     return "\n".join(lines) + "\n" + info
 
 # ============================================================
-#  CLI (unchanged, keeping all entry points)
+#  compare
+# ============================================================
+
+def compare(username1, username2, power_system="modern", display_type="Standard", control_type="unique"):
+    # Determine pb_type from power system
+    if power_system.lower() in ("classic", "modern"):
+        pb_type = "time"
+    elif power_system.lower() == "fmc":
+        pb_type = "move"
+    else:
+        return f"Unknown power system: {power_system}"
+
+    # Fetch data
+    power_data, merged_data, display_name, control_name = _run_power(power_system, display_type, control_type, pb_type)
+    categories, tiers = POWER_SYSTEMS[power_system]
+    get_primary, is_better, fmt_primary, _ = _get_metric_functions(pb_type)
+
+    # Find both players in power_data
+    p1_row = find_player_in_power(power_data, username1)
+    p2_row = find_player_in_power(power_data, username2)
+    if not p1_row:
+        return f"Player matching '{username1}' not found."
+    if not p2_row:
+        return f"Player matching '{username2}' not found."
+
+    p1_name = p1_row[0]
+    p2_name = p2_row[0]
+    p1_power = p1_row[2]
+    p2_power = p2_row[2]
+
+    # Determine first player (higher power)
+    if p1_power < p2_power:
+        p1_name, p2_name = p2_name, p1_name
+        p1_power, p2_power = p2_power, p1_power
+
+    # Build valid categories from the power system
+    valid_keys = set()
+    for cat in categories:
+        key = (cat['width'], cat['height'], cat['gameMode'], cat['avglen'])
+        valid_keys.add(key)
+
+    # Collect best scores for each player per category
+    def get_best_scores(target_name):
+        best = {}
+        for s in merged_data:
+            if target_name.lower() not in s['nameFilter'].lower():
+                continue
+            key = (s['width'], s['height'], s['gameMode'], s['avglen'])
+            if key not in valid_keys:
+                continue
+            val = get_primary(s)
+            if val is None or val == -1:
+                continue
+            if key not in best or is_better(val, get_primary(best[key])):
+                best[key] = s
+        return best
+
+    scores1 = get_best_scores(p1_name)
+    scores2 = get_best_scores(p2_name)
+
+    common_keys = set(scores1.keys()) & set(scores2.keys())
+    if not common_keys:
+        return f"No common scores found for {p1_name} and {p2_name}."
+
+    entries = []
+    for key in common_keys:
+        s1 = scores1[key]
+        s2 = scores2[key]
+        v1 = get_primary(s1)
+        v2 = get_primary(s2)
+        if v2 is None or v2 == 0:
+            continue
+        pct = (v2 - v1) / v2 * 100
+        W, H, gameMode, avglen = key
+        cat_id = get_category_id(W, H, gameMode, avglen)
+        puzzle_str = f"{W}x{H}"
+        fmt1 = fmt_primary(v1)
+        fmt2 = fmt_primary(v2)
+        entries.append((pct, puzzle_str, cat_id, fmt1, fmt2))
+
+    entries.sort(key=lambda x: -x[0])
+
+    # Build output
+    lines = []
+    header = f"{p1_name} ({p1_power}) vs {p2_name} ({p2_power})"
+    lines.append(header)
+
+    # Prepare rows for column alignment — puzzle and category combined, no pipe between them
+    rows = []
+    for pct, ps, cat, f1, f2 in entries:
+        pct_str = f"{pct:+.2f}%"
+        combined = f"{ps} {cat}"
+        rows.append([combined, f1, pct_str, f2])
+
+    if rows:
+        lines.extend(_pad_columns(rows))
+
+    info = f"[Power: {power_system.capitalize()} | Display: {display_name} | Control: {control_name}]"
+    lines.append(info)
+
+    return "\n".join(lines)
+
+# ============================================================
+#  CLI 
 # ============================================================
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print(__doc__)
+        print("Usage: python stats.py <command> [args...]")
+        print("Commands: getpb, getwr, numwrs, rank, getreq, top25, bestscores, worstscores, lb30, compare")
         sys.exit(1)
 
     cmd = sys.argv[1].lower()
@@ -844,5 +998,16 @@ if __name__ == "__main__":
         pb = sys.argv[7] if len(sys.argv) > 7 else "time"
         print(lb30(puzzle, relay, avglen, display, control, pb))
 
+    elif cmd == "compare":
+        if len(sys.argv) < 4:
+            print("Usage: python stats.py compare <username1> <username2> [powerSystem=modern] [displayType=Standard] [controlType=unique]")
+            sys.exit(1)
+        username1 = sys.argv[2]
+        username2 = sys.argv[3]
+        power = sys.argv[4] if len(sys.argv) > 4 else "modern"
+        display = sys.argv[5] if len(sys.argv) > 5 else "Standard"
+        control = sys.argv[6] if len(sys.argv) > 6 else "unique"
+        print(compare(username1, username2, power, display, control))
+
     else:
-        print("Unknown command. Use getpb, getwr, numwrs, rank, getreq, top25, bestscores, worstscores, or lb30.")
+        print("Unknown command. Use getpb, getwr, numwrs, rank, getreq, top25, bestscores, worstscores, lb30, or compare.")
