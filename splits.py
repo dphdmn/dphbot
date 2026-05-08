@@ -134,11 +134,12 @@ def splits(sol: str) -> Optional[List[List[Union[float, int]]]]:
     except Exception:
         return None
 
-    solution, scramble, move_times = None, None, None
+    solution, scramble, move_times, tps_from_url = None, None, None, None
 
     try:
         if len(replay_data) < 10:
             solution = replay_data[0]
+            tps_from_url = replay_data[1]
             scramble = replay_data[2]
             move_times = replay_data[3]
         else:
@@ -158,11 +159,11 @@ def splits(sol: str) -> Optional[List[List[Union[float, int]]]]:
         grids_states = {}
 
     try:
-        return calculate_splits(grids_states, move_times, solution, scramble)
+        return calculate_splits(grids_states, move_times, solution, scramble, tps_from_url)
     except Exception:
         return None
 
-def calculate_splits(grids_states: Dict, move_times: List[float], solution: str, scramble: str) -> List[List[Union[float, int]]]:
+def calculate_splits(grids_states: Dict, move_times, solution: str, scramble: str, tps_from_url=None) -> List[List[Union[float, int]]]:
     try:
         solution_length = len(expand_solution(solution))
     except Exception:
@@ -177,26 +178,29 @@ def calculate_splits(grids_states: Dict, move_times: List[float], solution: str,
     split_times = []
     split_moves = []
 
-    try:
-        relevant_grid_indices = [int(key) for key in grids_states.keys()
-                               if grids_states[key]['activeZone']['width'] + 1 >= len(puzzle_matrix[0]) / 2
-                               and grids_states[key]['activeZone']['height'] + 1 >= len(puzzle_matrix) / 2]
-        relevant_grid_indices.append(solution_length - 1)
-        previous_time = 0
-        previous_move_count = 0
+    can_compute_splits = isinstance(move_times, list) and len(move_times) > 0
 
-        for current_index in relevant_grid_indices[1:]:
-            current_move_count = current_index + 1
-            current_time = move_times[current_index]
-            split_duration = current_time - previous_time
-            moves_in_split = current_move_count - previous_move_count
+    if can_compute_splits:
+        try:
+            relevant_grid_indices = [int(key) for key in grids_states.keys()
+                                   if grids_states[key]['activeZone']['width'] + 1 >= len(puzzle_matrix[0]) / 2
+                                   and grids_states[key]['activeZone']['height'] + 1 >= len(puzzle_matrix) / 2]
+            relevant_grid_indices.append(solution_length - 1)
+            previous_time = 0
+            previous_move_count = 0
 
-            split_times.append(split_duration / 1000)
-            split_moves.append(moves_in_split)
-            previous_time = current_time
-            previous_move_count = current_move_count
-    except Exception:
-        pass
+            for current_index in relevant_grid_indices[1:]:
+                current_move_count = current_index + 1
+                current_time = move_times[current_index]
+                split_duration = current_time - previous_time
+                moves_in_split = current_move_count - previous_move_count
+
+                split_times.append(split_duration / 1000)
+                split_moves.append(moves_in_split)
+                previous_time = current_time
+                previous_move_count = current_move_count
+        except Exception:
+            pass
 
     splits = split_times + split_moves
 
@@ -216,8 +220,13 @@ def calculate_splits(grids_states: Dict, move_times: List[float], solution: str,
 
     try:
         moves = solution_length
-        time = move_times[-1]
-        tps = f"{(moves*1000 / time):.3f}"
+        if isinstance(move_times, list) and len(move_times) > 0:
+            time = move_times[-1]
+            tps = f"{(moves*1000 / time):.3f}"
+        elif tps_from_url is not None and tps_from_url > 0:
+            tps_val = tps_from_url / 1000
+            time = moves * 1000 / tps_val
+            tps = f"{tps_val:.3f}"
     except Exception:
         pass
 
