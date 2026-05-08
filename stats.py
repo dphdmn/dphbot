@@ -620,14 +620,21 @@ def _player_scores(username, power_system, display_type, control_type, best=True
     categories, tiers = POWER_SYSTEMS[power_system]
     get_primary, is_better, fmt_primary, fmt_secondary = _get_metric_functions(pb_type)
 
-    user_scores = {}
-    actual_username = None  # Track the actual username found in scores
+    # First pass: find the actual username from merged_data using the provided substring
+    actual_username = None
     for s in merged_data:
-        if username.lower() not in s['nameFilter'].lower():
-            continue
-        # Store the actual username from the first matching score
-        if actual_username is None:
+        if username.lower() in s['nameFilter'].lower():
             actual_username = s['nameFilter']
+            break
+
+    if actual_username is None:
+        return f"No scores found for {username}."
+
+    # Second pass: collect scores using exact actual_username match
+    user_scores = {}
+    for s in merged_data:
+        if s['nameFilter'] != actual_username:
+            continue
         key = (s['width'], s['height'], s['gameMode'], s['avglen'])
         if key not in user_scores:
             user_scores[key] = s
@@ -647,7 +654,7 @@ def _player_scores(username, power_system, display_type, control_type, best=True
                         user_scores[key] = s
 
     if not user_scores:
-        return f"No scores found for {username}."
+        return f"No scores found for {actual_username}."
 
     tier_order_map = {t['name']: i for i, t in enumerate(tiers)}
     entries = []
@@ -751,13 +758,21 @@ def latestpbs(username, power_system="modern", display_type="Standard", control_
     for cat in categories:
         valid_cats.add((cat['width'], cat['height'], cat['gameMode'], cat['avglen']))
 
-    user_scores = {}
+    # First pass: find the actual username from merged_data using the provided substring
     actual_username = None
     for s in merged_data:
-        if username.lower() not in s['nameFilter'].lower():
-            continue
-        if actual_username is None:
+        if username.lower() in s['nameFilter'].lower():
             actual_username = s['nameFilter']
+            break
+
+    if actual_username is None:
+        return f"No scores found for {username}."
+
+    # Second pass: collect scores using exact actual_username match
+    user_scores = {}
+    for s in merged_data:
+        if s['nameFilter'] != actual_username:
+            continue
         key = (s['width'], s['height'], s['gameMode'], s['avglen'])
         if key not in valid_cats:
             continue
@@ -771,7 +786,7 @@ def latestpbs(username, power_system="modern", display_type="Standard", control_
                 user_scores[key] = s
 
     if not user_scores:
-        return f"No scores found for {username}."
+        return f"No scores found for {actual_username}."
 
     entries = []
     for (W, H, gameMode, avglen), score in user_scores.items():
