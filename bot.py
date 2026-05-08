@@ -1687,6 +1687,170 @@ async def admin_pbhistory_exe(
         if 'conn' in locals():
             conn.close()
 
+@client.tree.command(description="[Admin only] Get your best solves ever for a specific puzzle in slidysim exe (not just records)")
+@app_commands.describe(
+    size="Puzzle size in NxM format (e.g., 4x5, 10x18, 5x5)",
+    pbtype="Sort by: time (lower better), moves (lower better), tps (higher better)",
+    time_limit="Optional maximum time in seconds",
+    moves_limit="Optional maximum moves",
+    tps_limit="Optional minimum TPS",
+    hours_limit="Optional time window in hours (e.g., 24 for last day; defaults to all time)"
+)
+async def admin_coolsolves_exe(
+    interaction: discord.Interaction,
+    size: str,
+    pbtype: Literal["time", "moves", "tps"] = "time",
+    time_limit: float = None,
+    moves_limit: int = None,
+    tps_limit: float = None,
+    hours_limit: int = None
+):
+    await interaction.response.defer(ephemeral=False)
+    
+    try:
+        if interaction.user.id != YOUR_USER_ID:
+            await interaction.followup.send(
+                "You are not authorized to use this command.",
+                ephemeral=True
+            )
+            return
+        
+        try:
+            width, height = map(int, size.lower().split('x'))
+        except:
+            await interaction.followup.send(
+                "Invalid size format. Please use NxM format (e.g., 4x5, 10x18).",
+                ephemeral=False
+            )
+            return
+        
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        timestamp_cutoff = None
+        if hours_limit is not None:
+            timestamp_cutoff = int(timemodule.time() - (hours_limit * 3600)) * 1000
+        
+        query = """
+            SELECT 
+                a.time,
+                a.moves,
+                a.tps,
+                b.timestamp
+            FROM 
+                (single_solves a 
+                JOIN solves b 
+                ON a.id BETWEEN b.single_start_id AND b.single_end_id) 
+            WHERE 
+                a.completed = 1 
+                AND b.scrambler = 'Random permutation' 
+                AND (b.success IS NULL OR b.success = 1)
+                AND b.solve_type != 'BLD'
+                AND b.display_type = 'Standard'
+                AND a.width = ? AND a.height = ?
+        """
+        
+        params = [width, height]
+        
+        if timestamp_cutoff is not None:
+            query += " AND b.timestamp >= ?"
+            params.append(timestamp_cutoff)
+        
+        if time_limit is not None:
+            query += " AND a.time < ?"
+            params.append(int(time_limit * 1000))
+            
+        if moves_limit is not None:
+            query += " AND a.moves < ?"
+            params.append(moves_limit * 1000)
+            
+        if tps_limit is not None:
+            query += " AND a.tps > ?"
+            params.append(tps_limit * 1000)
+        
+        # Sort best first: time/moves = ascending, tps = descending
+        if pbtype == "time":
+            query += " ORDER BY a.time ASC"
+        elif pbtype == "moves":
+            query += " ORDER BY a.moves ASC"
+        else:
+            query += " ORDER BY a.tps DESC"
+        
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        
+        if not rows:
+            size_filter = f" for size {width}x{height}"
+            time_filter = f" under {time_limit}s" if time_limit is not None else ""
+            moves_filter = f" with moves < {moves_limit}" if moves_limit is not None else ""
+            tps_filter = f" with TPS > {tps_limit}" if tps_limit is not None else ""
+            hours_filter = f" in last {hours_limit} hours" if hours_limit is not None else ""
+            
+            await interaction.followup.send(
+                f"No matching solves found{size_filter}{time_filter}{moves_filter}{tps_filter}{hours_filter}.",
+                ephemeral=False
+            )
+            return
+        
+        # Build table header
+        header = " Time (s) | Moves |  TPS   | Date (UTC)\n"
+        header += "----------|-------|--------|--------------"
+        
+        table_lines = []
+        for time_ms, moves_ms, tps_ms, ts_ms in rows:
+            time_s = time_ms / 1000
+            moves = int(moves_ms / 1000)
+            tps = tps_ms / 1000
+            date_str = datetime.fromtimestamp(ts_ms / 1000).strftime('%Y-%m-%d %H:%M:%S')
+            line = f"{time_s:>9.3f} | {moves:>5} | {tps:>6.3f} | {date_str}"
+            
+            # Check if adding this line would exceed 2000 chars in the final message
+            candidate_rows = table_lines + [line]
+            candidate_text = "\n".join(candidate_rows)
+            full_candidate = f"```\n{header}\n{candidate_text}\n```"
+            
+            if len(full_candidate) > 2000:
+                break
+            
+            table_lines.append(line)
+        
+        total_solves = len(rows)
+        shown_solves = len(table_lines)
+        
+        filter_info = []
+        if time_limit is not None:
+            filter_info.append(f"Time < {time_limit}s")
+        if moves_limit is not None:
+            filter_info.append(f"Moves < {moves_limit}")
+        if tps_limit is not None:
+            filter_info.append(f"TPS > {tps_limit}")
+        if hours_limit is not None:
+            filter_info.append(f"Last {hours_limit}h")
+        
+        metadata = f"Filters: {', '.join(filter_info) if filter_info else 'None'}"
+        if shown_solves < total_solves:
+            metadata += f" | Showing {shown_solves}/{total_solves} solves (truncated to fit Discord)"
+        else:
+            metadata += f" | Total: {total_solves} solves"
+        
+        embed = discord.Embed(
+            title=f"🔥 Best Solves ({pbtype}) — {width}x{height}",
+            color=discord.Color.green()
+        )
+        
+        embed.description = (
+            f"```\n{header}\n" + "\n".join(table_lines) + "\n```\n"
+            f"{metadata}"
+        )
+        
+        await interaction.followup.send(embed=embed, ephemeral=False)
+
+    except Exception as e:
+        await interaction.followup.send(f"Error: {str(e)}", ephemeral=False)
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
 @client.tree.command(description="[Admin only] Get your personal best solve for a specific puzzle size in slidysim exe")
 @app_commands.describe(
     size="Puzzle size in NxM format (e.g., 4x5, 10x18, 5x5)",
