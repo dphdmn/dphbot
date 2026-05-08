@@ -192,6 +192,35 @@ async def safe_edit(interaction: discord.Interaction, content: str, view=None):
         await interaction.edit_original_response(content=content, view=view)
 
 # ═══════════ help command ═══════════
+def _discord_file_from_text(content: str, filename: str = "response.txt") -> discord.File:
+    return discord.File(io.BytesIO(content.encode("utf-8")), filename=filename)
+
+async def safe_followup(interaction: discord.Interaction, content: str, view=None, ephemeral=False, file=None, fallback_content: str = None):
+    if len(content) <= 2000:
+        await interaction.followup.send(content=content, view=view, ephemeral=ephemeral)
+        return
+
+    if fallback_content and len(fallback_content) <= 2000:
+        await interaction.followup.send(content=fallback_content, view=view, ephemeral=ephemeral)
+        return
+
+    attachment_content = fallback_content or content
+    f = file or _discord_file_from_text(attachment_content)
+    await interaction.followup.send(content="Output too large - see attached file.", file=f, view=view, ephemeral=ephemeral)
+
+async def safe_edit(interaction: discord.Interaction, content: str, view=None, fallback_content: str = None):
+    if len(content) <= 2000:
+        await interaction.edit_original_response(content=content, attachments=[], view=view)
+        return
+
+    if fallback_content and len(fallback_content) <= 2000:
+        await interaction.edit_original_response(content=fallback_content, attachments=[], view=view)
+        return
+
+    attachment_content = fallback_content or content
+    f = _discord_file_from_text(attachment_content)
+    await interaction.edit_original_response(content="Output too large - see attached file.", attachments=[f], view=view)
+
 class HelpMenuView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=120)
@@ -521,6 +550,47 @@ async def top25(
         await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
 
 # ═══════════ bestscores (power system buttons) – FIXED ═══════════
+def _format_signed_pct(pct_val: float) -> str:
+    sign = "+" if pct_val >= 0 else "-"
+    num = abs(pct_val)
+    if num < 10:
+        return f"{sign} {num:.2f}%"
+    return f"{sign}{num:.2f}%"
+
+def _ansi_pct(pct_val: float, color_code: str, bold: bool) -> str:
+    weight = "1" if bold else "0"
+    return f"\u001b[{weight};{color_code}m{_format_signed_pct(pct_val)}\u001b[0;0m"
+
+def _wrap_code_block(body: str, language: str = "") -> str:
+    return f"```{language}\n{body}\n```"
+
+def _format_bestscores_result(result: str, use_ansi: bool) -> str:
+    formatted_lines = []
+    for line in result.strip().split('\n'):
+        parts = line.split('|')
+        if len(parts) < 4:
+            formatted_lines.append(line)
+            continue
+
+        pct_raw = parts[-1].strip().replace('%', '')
+        try:
+            pct_val = float(pct_raw)
+        except ValueError:
+            formatted_lines.append(line)
+            continue
+
+        pct_text = _format_signed_pct(pct_val)
+        if use_ansi:
+            pct_text = _ansi_pct(pct_val, _get_ansi_color_for_pctBest(pct_val), pct_val >= 0)
+        parts[-1] = f" {pct_text} "
+        formatted_lines.append('|'.join(parts))
+
+    body = "\n".join(formatted_lines) if formatted_lines else "no data"
+    return _wrap_code_block(body, "ansi" if use_ansi else "")
+
+def _bestscores_outputs(result: str) -> tuple[str, str]:
+    return _format_bestscores_result(result, True), _format_bestscores_result(result, False)
+
 async def bestscores_view(username, power_system, display_type, control_type):
     view = ui.View(timeout=None)
     systems = ["modern", "classic", "fmc"]
@@ -537,52 +607,9 @@ async def bestscores_view(username, power_system, display_type, control_type):
                     control_type=control_type.lower()
                 )
 
-                lines = result.strip().split('\n')
-
-                ansi_lines = []
-
-                for line in lines:
-                    parts = line.split('|')
-
-                    if len(parts) >= 4:
-                        pct_raw = parts[-1].strip().replace('%', '')
-
-                        try:
-                            pct_val = float(pct_raw)
-
-                            color_code = _get_ansi_color_for_pctBest(pct_val)
-
-                            bold = "\u001b[1;" if pct_val >= 0 else "\u001b[0;"
-                            reset = "\u001b[0;0m"
-
-                            sign = "+" if pct_val >= 0 else "-"
-                            num = abs(pct_val)
-
-                            if num < 10:
-                                pct_str = f"{sign} {num:.2f}%"
-                            else:
-                                pct_str = f"{sign}{num:.2f}%"
-
-                            colored_pct = f"{bold}{color_code}m{pct_str}{reset}"
-
-                            parts[-1] = f" {colored_pct} "
-                            ansi_lines.append('|'.join(parts))
-
-                        except ValueError:
-                            ansi_lines.append(line)
-                    else:
-                        ansi_lines.append(line)
-
-                body = "\n".join(ansi_lines) if ansi_lines else "no data"
-                output = f"```ansi\n{body}\n```"
-
+                output, plain_output = _bestscores_outputs(result)
                 new_view = await bestscores_view(username, sys, display_type, control_type)
-
-                for child in new_view.children:
-                    if isinstance(child, ui.Button):
-                        child.callback = await make_callback(child.label)
-
-                await safe_edit(interaction, output, view=new_view)
+                await safe_edit(interaction, output, view=new_view, fallback_content=plain_output)
 
             except Exception as e:
                 await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
@@ -623,47 +650,9 @@ async def bestscores(interaction: discord.Interaction, username: str = None, pow
             control_type=control_type.lower()
         )
 
-        # Apply the same ANSI formatting as the view callback
-        lines = result.strip().split('\n')
-        ansi_lines = []
-
-        for line in lines:
-            parts = line.split('|')
-
-            if len(parts) >= 4:
-                pct_raw = parts[-1].strip().replace('%', '')
-
-                try:
-                    pct_val = float(pct_raw)
-
-                    color_code = _get_ansi_color_for_pctBest(pct_val)
-
-                    bold = "\u001b[1;" if pct_val >= 0 else "\u001b[0;"
-                    reset = "\u001b[0;0m"
-
-                    sign = "+" if pct_val >= 0 else "-"
-                    num = abs(pct_val)
-
-                    if num < 10:
-                        pct_str = f"{sign} {num:.2f}%"
-                    else:
-                        pct_str = f"{sign}{num:.2f}%"
-
-                    colored_pct = f"{bold}{color_code}m{pct_str}{reset}"
-
-                    parts[-1] = f" {colored_pct} "
-                    ansi_lines.append('|'.join(parts))
-
-                except ValueError:
-                    ansi_lines.append(line)
-            else:
-                ansi_lines.append(line)
-
-        body = "\n".join(ansi_lines) if ansi_lines else "no data"
-        output = f"```ansi\n{body}\n```"
-
+        output, plain_output = _bestscores_outputs(result)
         view = await bestscores_view(username, power_system.lower(), display_type, control_type)
-        await safe_followup(interaction, output, view=view)
+        await safe_followup(interaction, output, view=view, fallback_content=plain_output)
         
     except ValueError as e:
         await interaction.followup.send(str(e), ephemeral=True)
@@ -1074,6 +1063,44 @@ def _get_ansi_color_for_pctBest(pct: float) -> str:
     else:
         return "31"   # red (extreme negative)        
 
+def _format_compare_result(result: str, use_ansi: bool) -> str:
+    lines = result.strip().split('\n')
+    header = lines[0] if lines else "Comparison"
+    formatted_lines = []
+    info_line = ""
+
+    for line in lines[1:]:
+        if line.startswith("[Power:"):
+            info_line = line
+            continue
+
+        parts = line.split('|')
+        if len(parts) < 3:
+            formatted_lines.append(line)
+            continue
+
+        pct_raw = parts[2].strip().replace('%', '')
+        try:
+            pct_val = float(pct_raw)
+        except ValueError:
+            formatted_lines.append(line)
+            continue
+
+        pct_text = _format_signed_pct(pct_val)
+        if use_ansi:
+            pct_text = _ansi_pct(pct_val, _get_ansi_color_for_pct(pct_val), abs(pct_val) >= 15)
+        parts[2] = f" {pct_text} "
+        formatted_lines.append('|'.join(parts))
+
+    body = "\n".join(formatted_lines) if formatted_lines else "no common scores found"
+    output = f"**{header}**\n{_wrap_code_block(body, 'ansi' if use_ansi else '')}"
+    if info_line:
+        output += f"\n_{info_line}_"
+    return output
+
+def _compare_outputs(result: str) -> tuple[str, str]:
+    return _format_compare_result(result, True), _format_compare_result(result, False)
+
 async def compare_view(username1, username2, power_system, display_type, control_type):
     view = ui.View(timeout=None)
     systems = ["modern", "classic", "fmc"]
@@ -1084,59 +1111,9 @@ async def compare_view(username1, username2, power_system, display_type, control
             try:
                 sys = sys_label.lower()
                 result = stats.compare(username1, username2, power_system=sys, display_type=display_type.lower(), control_type=control_type.lower())
-                lines = result.strip().split('\n')
-                header = lines[0] if lines else "Comparison"
-                
-                ansi_lines = []
-                info_line = ""
-                for line in lines[1:]:
-                    if line.startswith("[Power:"):
-                        info_line = line
-                    else:
-                        parts = line.split('|')
-
-                        if len(parts) >= 3:
-                            pct_str = parts[2].strip().replace('%', '')
-
-                            try:
-                                pct_val = float(pct_str)
-
-                                color_code = _get_ansi_color_for_pct(pct_val)
-
-                                if abs(pct_val) >= 15:
-                                    bold = "\u001b[1;"
-                                else:
-                                    bold = "\u001b[0;"
-
-                                reset = "\u001b[0;0m"
-
-                                sign = "+" if pct_val >= 0 else "-"
-                                num = abs(pct_val)
-
-                                if num < 10:
-                                    pct_str = f"{sign} {num:.2f}%"
-                                else:
-                                    pct_str = f"{sign}{num:.2f}%"
-
-                                colored_pct = f"{bold}{color_code}m{pct_str}{reset}"
-
-                                parts[2] = f" {colored_pct} "
-                                ansi_lines.append('|'.join(parts))
-
-                            except ValueError:
-                                ansi_lines.append(line)
-                        else:
-                            ansi_lines.append(line)
-                
-                body = "\n".join(ansi_lines) if ansi_lines else "no common scores found"
-                output = f"**{header}**\n```ansi\n{body}\n```"
-                if info_line:
-                    output += f"\n_{info_line}_"
+                output, plain_output = _compare_outputs(result)
                 new_view = await compare_view(username1, username2, sys, display_type, control_type)
-                for child in new_view.children:
-                    if isinstance(child, ui.Button):
-                        child.callback = await make_callback(child.label)
-                await safe_edit(interaction, output, view=new_view)
+                await safe_edit(interaction, output, view=new_view, fallback_content=plain_output)
             except Exception as e:
                 await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
         return cb
@@ -1185,57 +1162,9 @@ async def compare(
             display_type=display_type.lower(),
             control_type=control_type.lower()
         )
-        lines = result.strip().split('\n')
-        header = lines[0] if lines else "Comparison"
-        
-        # Parse lines and add ANSI colors to percentages - MATCHING VIEW CODE
-        ansi_lines = []
-        info_line = ""
-        for line in lines[1:]:
-            if line.startswith("[Power:"):
-                info_line = line
-            else:
-                parts = line.split('|')
-                if len(parts) >= 3:
-                    pct_str = parts[2].strip().replace('%', '')
-
-                    try:
-                        pct_val = float(pct_str)
-
-                        color_code = _get_ansi_color_for_pct(pct_val)
-
-                        if abs(pct_val) >= 15:
-                            bold = "\u001b[1;"
-                        else:
-                            bold = "\u001b[0;"
-
-                        reset = "\u001b[0;0m"
-
-                        sign = "+" if pct_val >= 0 else "-"
-                        num = abs(pct_val)
-
-                        if num < 10:
-                            pct_str = f"{sign} {num:.2f}%"
-                        else:
-                            pct_str = f"{sign}{num:.2f}%"
-
-                        colored_pct = f"{bold}{color_code}m{pct_str}{reset}"
-
-                        parts[2] = f" {colored_pct} "
-                        ansi_lines.append('|'.join(parts))
-
-                    except ValueError:
-                        ansi_lines.append(line)
-                else:
-                    ansi_lines.append(line)
-        
-        body = "\n".join(ansi_lines) if ansi_lines else "no common scores found"
-        output = f"**{header}**\n```ansi\n{body}\n```"
-        if info_line:
-            output += f"\n_{info_line}_"
-
+        output, plain_output = _compare_outputs(result)
         view = await compare_view(username1, username2, power_system.lower(), display_type, control_type)
-        await safe_followup(interaction, output, view=view)
+        await safe_followup(interaction, output, view=view, fallback_content=plain_output)
 
     except ValueError as e:
         await interaction.followup.send(str(e), ephemeral=True)
