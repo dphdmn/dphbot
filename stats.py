@@ -737,6 +737,75 @@ def bestscores(username, power_system="modern", display_type="Standard", control
 def worstscores(username, power_system="modern", display_type="Standard", control_type="unique"):
     return _player_scores(username, power_system, display_type, control_type, best=False)
 
+def latestpbs(username, power_system="modern", display_type="Standard", control_type="unique"):
+    if power_system == "fmc":
+        pb_type = "move"
+    else:
+        pb_type = "time"
+    _, merged_data, display_name, control_name = _run_power(power_system, display_type, control_type, pb_type)
+    categories, tiers = POWER_SYSTEMS[power_system]
+    get_primary, is_better, fmt_primary, fmt_secondary = _get_metric_functions(pb_type)
+
+    # Build valid category keys for this power system
+    valid_cats = set()
+    for cat in categories:
+        valid_cats.add((cat['width'], cat['height'], cat['gameMode'], cat['avglen']))
+
+    user_scores = {}
+    actual_username = None
+    for s in merged_data:
+        if username.lower() not in s['nameFilter'].lower():
+            continue
+        if actual_username is None:
+            actual_username = s['nameFilter']
+        key = (s['width'], s['height'], s['gameMode'], s['avglen'])
+        if key not in valid_cats:
+            continue
+        if key not in user_scores:
+            user_scores[key] = s
+        else:
+            cur = user_scores[key]
+            cur_val = get_primary(cur)
+            new_val = get_primary(s)
+            if new_val is not None and (cur_val is None or is_better(new_val, cur_val)):
+                user_scores[key] = s
+
+    if not user_scores:
+        return f"No scores found for {username}."
+
+    entries = []
+    for (W, H, gameMode, avglen), score in user_scores.items():
+        val = get_primary(score)
+        if val is None or val == -1:
+            continue
+        
+        timestamp = score.get('timestamp') or 0
+        entries.append((
+            timestamp,
+            W, H, gameMode, avglen, val, score
+        ))
+
+    entries.sort(key=lambda e: e[0], reverse=True)
+
+    output_lines = []
+    if actual_username:
+        output_lines.append(f"Latest PBs for {actual_username}")
+    
+    tier_lines = []
+    for timestamp, W, H, gameMode, avglen, val, score in entries:
+        cat_id = get_category_id(W, H, gameMode, avglen)
+        primary_str = fmt_primary(val)
+        date_str = format_date(timestamp)
+        
+        puzzle_str = f"{W}x{H}"
+        tier_lines.append([puzzle_str + " " + cat_id, primary_str, date_str])
+
+    if tier_lines:
+        output_lines.extend(_pad_columns(tier_lines))
+
+    info = f"\n[Power: {power_system.capitalize()} | Display: {display_type} | Control: {control_type}]"
+    return "\n".join(output_lines) + info
+
 # ============================================================
 #  lb30
 # ============================================================
@@ -973,6 +1042,16 @@ if __name__ == "__main__":
         display = sys.argv[3] if len(sys.argv) > 3 else "Standard"
         control = sys.argv[4] if len(sys.argv) > 4 else "unique"
         print(top25(power, display, control))
+
+    elif cmd == "latestpbs":
+        if len(sys.argv) < 3:
+            print("Usage: python stats.py latestpbs <username> [powerSystem=modern] [displayType=Standard] [controlType=unique]")
+            sys.exit(1)
+        username = sys.argv[2]
+        power = sys.argv[3] if len(sys.argv) > 3 else "modern"
+        display = sys.argv[4] if len(sys.argv) > 4 else "Standard"
+        control = sys.argv[5] if len(sys.argv) > 5 else "unique"
+        print(latestpbs(username, power, display, control))
 
     elif cmd == "bestscores":
         if len(sys.argv) < 3:

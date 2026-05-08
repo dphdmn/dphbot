@@ -662,6 +662,75 @@ async def bestscores(interaction: discord.Interaction, username: str = None, pow
     except Exception as e:
         await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
 
+# ═══════════ latestpbs (power system buttons) ═══════════
+async def latestpbs_view(username, power_system, display_type, control_type):
+    view = ui.View(timeout=None)
+    systems = ["modern", "classic", "fmc"]
+
+    async def make_callback(sys_label):
+        async def cb(interaction: discord.Interaction):
+            await interaction.response.defer()
+            try:
+                sys = sys_label.lower()
+                result = stats.latestpbs(
+                    username,
+                    power_system=sys,
+                    display_type=display_type.lower(),
+                    control_type=control_type.lower()
+                )
+
+                output = f"```\n{result}\n```"
+                new_view = await latestpbs_view(username, sys, display_type, control_type)
+                await safe_edit(interaction, output, view=new_view, fallback_content=result)
+
+            except Exception as e:
+                await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+
+        return cb
+
+    for sys in systems:
+        view.add_item(ui.Button(
+            label=sys.capitalize(),
+            style=discord.ButtonStyle.secondary if sys != power_system else discord.ButtonStyle.primary,
+            disabled=(sys == power_system),
+            custom_id=f"latestpbs_{sys}"
+        ))
+
+    for child in view.children:
+        if isinstance(child, ui.Button):
+            child.callback = await make_callback(child.label)
+
+    return view
+
+@client.tree.command(description="Show a player's latest PBs sorted by date")
+@app_commands.describe(username="Player name (or part of it) – defaults to your Discord display name",
+                       power_system="Power system: modern, classic, or fmc",
+                       display_type="Display type for filtering scores",
+                       control_type="Control type for filtering scores")
+@app_commands.choices(power_system=[app_commands.Choice(name="modern", value="modern"), app_commands.Choice(name="classic", value="classic"), app_commands.Choice(name="fmc", value="fmc")])
+@app_commands.autocomplete(display_type=display_type_autocomplete, control_type=control_type_autocomplete)
+async def latestpbs(interaction: discord.Interaction, username: str = None, power_system: str = "modern", display_type: str = "standard", control_type: str = "unique"):
+    await interaction.response.defer(ephemeral=False)
+    try:
+        if username is None:
+            username = interaction.user.display_name
+        
+        result = stats.latestpbs(
+            username, 
+            power_system=power_system.lower(), 
+            display_type=display_type.lower(), 
+            control_type=control_type.lower()
+        )
+
+        output = f"```\n{result}\n```"
+        view = await latestpbs_view(username, power_system.lower(), display_type, control_type)
+        await safe_followup(interaction, output, view=view, fallback_content=result)
+        
+    except ValueError as e:
+        await interaction.followup.send(str(e), ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"error: {str(e)}", ephemeral=True)
+
 # ═══════════ numwrs (filter type buttons only – no power buttons) ═══════════
 async def numwrs_view(display_type, control_type, pb_type, filter_type, relay_type, power_system):
     view = ui.View(timeout=None)
