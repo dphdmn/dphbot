@@ -44,11 +44,14 @@ def save_replay_and_generate_url(file_content: str, filename: str) -> str:
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(file_content)
     try:
+        original_dir = os.getcwd()
         os.chdir(REPO_LOCAL_DIR)
         os.system("git add .")
         os.system(f'git commit -m "update {filename}"')
         os.system("git push -u origin main")
+        os.chdir(original_dir)
     except Exception as e:
+        os.chdir(original_dir)  # Also restore on error
         raise RuntimeError(f"Git error: {e}")
     return f"{GITHUB}/{REPO_NAME}/index.html?url={REPO_NAME}/{SUBFOLDERS}/{filename}"
 
