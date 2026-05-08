@@ -11,6 +11,7 @@ from urllib.parse import quote
 from datetime import date, datetime, timedelta
 import time as timemodule
 from splits import splits_formatted as getsplits
+from replay_generator import ReplayGenerator
 from marathon import getMarathons
 from typing import Literal
 import subprocess
@@ -2187,7 +2188,117 @@ async def splits(
     except Exception as e:
         await interaction.followup.send(f"An error occurred while processing: {str(e)}", ephemeral=True)
 
-    
+
+@client.tree.command(description="Generate a replay link from your solution")
+@app_commands.describe(
+    solution_text="Your solution string (e.g., R2ULDLU2R3D3L3UR2U2L2)",
+    file="Optional .txt file containing the solution",
+    scramble="Optional scramble string (e.g., '7 1 0 3/5 9 2 8/...')",
+    size="Optional puzzle size (e.g., '4x4', '3x3')",
+    tps="Optional TPS value (do not use with time)",
+    time="Optional solve time in seconds (e.g., 0.909) — do not use with tps",
+    movetimes="Optional comma-separated move times in ms (e.g., 0,16,50,90326947,...)"
+)
+async def makereplay(
+    interaction: discord.Interaction,
+    solution_text: str = None,
+    file: discord.Attachment = None,
+    scramble: str = None,
+    size: str = None,
+    tps: float = None,
+    time: float = None,
+    movetimes: str = None
+):
+    await interaction.response.defer(ephemeral=False)
+
+    try:
+        if tps is not None and time is not None:
+            await interaction.followup.send("Provide either tps or time, not both.", ephemeral=True)
+            return
+
+        if file and solution_text:
+            await interaction.followup.send("Provide either a file or solution text, not both.", ephemeral=True)
+            return
+
+        if file:
+            if not file.filename.endswith('.txt'):
+                await interaction.followup.send("Please upload a .txt file.", ephemeral=True)
+                return
+            content = await file.read()
+            if isinstance(content, bytes):
+                content = content.decode('utf-8')
+            solution = content.strip()
+        elif solution_text:
+            solution = solution_text.strip()
+        else:
+            await interaction.followup.send("You must provide a solution text or upload a .txt file.", ephemeral=True)
+            return
+
+        parsed_size = None
+        if size:
+            parts = size.lower().split('x')
+            if len(parts) == 2:
+                try:
+                    parsed_size = (int(parts[0]), int(parts[1]))
+                except ValueError:
+                    await interaction.followup.send(f"Invalid size format: '{size}'. Use e.g. '4x4'.", ephemeral=True)
+                    return
+            else:
+                await interaction.followup.send(f"Invalid size format: '{size}'. Use e.g. '4x4'.", ephemeral=True)
+                return
+
+        parsed_movetimes = -1
+        if movetimes:
+            try:
+                parsed_movetimes = [int(x.strip()) for x in movetimes.split(',')]
+            except ValueError:
+                await interaction.followup.send("Invalid movetimes format. Provide comma-separated integers (ms).", ephemeral=True)
+                return
+
+        gen = ReplayGenerator()
+        kwargs = {}
+        if parsed_size:
+            kwargs['size'] = parsed_size
+        if scramble:
+            kwargs['scramble'] = scramble
+        if parsed_movetimes != -1:
+            kwargs['movetimes'] = parsed_movetimes
+        if tps is not None:
+            kwargs['tps'] = tps
+        if time is not None:
+            kwargs['time'] = time
+
+        replay_url = gen.generate_simple_replay(solution, **kwargs)
+
+        try:
+            splits_data = getsplits(replay_url)
+        except Exception:
+            splits_data = "splits are failed"
+
+        url_length = len(replay_url)
+        link_md = f"[Replay]({replay_url})"
+
+        if url_length <= 1950:
+            if splits_data and splits_data not in ("Invalid splits data", "splits are failed"):
+                content = f"```\n{splits_data}\n```\n{link_md}"
+            else:
+                content = link_md
+            if len(content) <= 2000:
+                await interaction.followup.send(content)
+            else:
+                f = discord.File(io.StringIO(content), filename="replay_result.txt")
+                await interaction.followup.send(content="Result too large for message — see attached file.", file=f)
+        else:
+            file_content = f"Replay URL (too long for direct link):\n{replay_url}"
+            f = discord.File(io.StringIO(file_content), filename="replay_url.txt")
+            if splits_data and splits_data not in ("Invalid splits data", "splits are failed"):
+                await interaction.followup.send(f"```\n{splits_data}\n```", file=f)
+            else:
+                await interaction.followup.send("Replay URL too long for a direct link — see attached file.", file=f)
+
+    except Exception as e:
+        await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+
 
 @client.tree.command(description="[Admin only] Get a short URL one-click button from Replay File")
 async def admin_replay(interaction: discord.Interaction, file: discord.Attachment, metadata: str = None):
