@@ -1979,7 +1979,10 @@ async def admin_getpb_exe(
         timestamp = datetime.fromtimestamp(row_map['timestamp'] / 1000).strftime('%Y-%m-%d %H:%M:%S')
         
         slidy_url = "https://slidysim.github.io/replay?r=" + compress_array_to_string([solution, row_map['tps'], scramble, sequence])
-        splits_data = getsplits(slidy_url)
+        try:
+            splits_data = getsplits(slidy_url)
+        except Exception:
+            splits_data = "splits are failed"
 
         url_length = len(slidy_url)
         extra_note = ""
@@ -2004,7 +2007,7 @@ async def admin_getpb_exe(
         }[pbtype]
 
         time_window_info = f" (last {hours_limit} hours)" if hours_limit else ""
-        
+
         filter_info = []
         if time_limit is not None:
             filter_info.append(f"Time < {time_limit}s")
@@ -2012,16 +2015,16 @@ async def admin_getpb_exe(
             filter_info.append(f"Moves < {moves_limit}")
         if hours_limit is not None:
             filter_info.append(f"Last {hours_limit}h")
-            
+
         filters_applied = ""
         if filter_info:
             filters_applied = "\n**Filters:** " + ", ".join(filter_info)
-        
+
         embed_description = f"""
         **{pb_type_display}{time_window_info}** on {width}x{height}
         **Date:** {timestamp}{filters_applied}
         """
-        
+
         if splits_data != "Invalid splits data":
             embed_description += f"```\n{splits_data}\n```"
         
@@ -2089,7 +2092,10 @@ async def admin_latest_exe(interaction: discord.Interaction):
         solution = row_map['solution']
         
         slidy_url = "https://slidysim.github.io/replay?r=" + compress_array_to_string([solution, row_map['tps'], scramble, sequence])
-        splits_data = getsplits(slidy_url)
+        try:
+            splits_data = getsplits(slidy_url)
+        except Exception:
+            splits_data = "splits are failed"
 
         url_length = len(slidy_url)
         timestamp = str(int(timemodule.time()))
@@ -2161,7 +2167,11 @@ async def splits(
             await interaction.followup.send("You must upload a file or provide text.", ephemeral=True)
             return
 
-        splits_data = getsplits(file_content)
+        try:
+            splits_data = getsplits(file_content)
+        except Exception:
+            splits_data = "splits are failed"
+
         if splits_data == "Invalid splits data":
             await interaction.followup.send("Invalid splits data in the provided input.", ephemeral=True)
             return
@@ -2203,7 +2213,10 @@ async def admin_replay(interaction: discord.Interaction, file: discord.Attachmen
         await interaction.followup.send(f"Error saving file or pushing to Git: {str(e)}", ephemeral=True)
         return
 
-    splits_data = getsplits(file_content)
+    try:
+        splits_data = getsplits(file_content)
+    except Exception:
+        splits_data = "splits are failed"
 
     embed = discord.Embed(
         title=f"🌟 {metadata or 'Replay Link'} 🌟",
