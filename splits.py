@@ -19,7 +19,14 @@ def splits_file(filename: str):
         return None
 
 def splits_formatted(sol: str):
-    data = splits(sol)
+    try:
+        data = splits(sol)
+    except Exception:
+        return "splits are failed"
+
+    if data is None:
+        return "Invalid splits data"
+
     splits_data = data[0]
     # [splits, time, moves, tps, scramble, size, md, mmd, cubic]
     time, moves_total, tps_final, scramble, size, md, mmd, cubic = data[1:9]
@@ -109,74 +116,127 @@ def splits_formatted(sol: str):
 def splits(sol: str) -> Optional[List[List[Union[float, int]]]]:
     if "?r=" not in sol:
         return None
-    
-    query_start = sol.index('?')
-    query_params = sol[query_start + 1:].split('&')
-    replay_param = ''
-    
-    for param in query_params:
-        key_value = param.split('=')
-        if len(key_value) == 2 and key_value[0] == 'r':
-            replay_param = key_value[1]
-            break
-    
-    replay_data = decompress_string_to_array(replay_param)
+
+    try:
+        query_start = sol.index('?')
+        query_params = sol[query_start + 1:].split('&')
+        replay_param = ''
+        for param in query_params:
+            key_value = param.split('=')
+            if len(key_value) == 2 and key_value[0] == 'r':
+                replay_param = key_value[1]
+                break
+    except Exception:
+        return None
+
+    try:
+        replay_data = decompress_string_to_array(replay_param)
+    except Exception:
+        return None
+
     solution, scramble, move_times = None, None, None
-    
-    if len(replay_data) < 10:
-        solution = replay_data[0]
-        scramble = replay_data[2]
-        move_times = replay_data[3]
-    else:
-        solve_data = read_solve_data(replay_data[1])
-        solution = solve_data['solutions']
-        scramble = puzzle_to_scramble(parse_scramble_guess_square(solution))
-        move_times = solve_data['move_times'][0]
-    
-    grids_states = get_grids_states(solution, scramble)
-    return calculate_splits(grids_states, move_times, solution, scramble)
+
+    try:
+        if len(replay_data) < 10:
+            solution = replay_data[0]
+            scramble = replay_data[2]
+            move_times = replay_data[3]
+        else:
+            solve_data = read_solve_data(replay_data[1])
+            solution = solve_data['solutions']
+            try:
+                scramble = puzzle_to_scramble(parse_scramble_guess_square(solution))
+            except Exception:
+                scramble = ""
+            move_times = solve_data['move_times'][0]
+    except Exception:
+        return None
+
+    try:
+        grids_states = get_grids_states(solution, scramble)
+    except Exception:
+        grids_states = {}
+
+    try:
+        return calculate_splits(grids_states, move_times, solution, scramble)
+    except Exception:
+        return None
 
 def calculate_splits(grids_states: Dict, move_times: List[float], solution: str, scramble: str) -> List[List[Union[float, int]]]:
-    solution_length = len(expand_solution(solution))
-    puzzle_matrix = scramble_to_puzzle(scramble)
-    
-    relevant_grid_indices = [int(key) for key in grids_states.keys() 
-                           if grids_states[key]['activeZone']['width'] + 1 >= len(puzzle_matrix[0]) / 2 
-                           and grids_states[key]['activeZone']['height'] + 1 >= len(puzzle_matrix) / 2]
-    
-    splits = []
+    try:
+        solution_length = len(expand_solution(solution))
+    except Exception:
+        solution_length = 0
+
+    puzzle_matrix = [[0]]
+    try:
+        puzzle_matrix = scramble_to_puzzle(scramble)
+    except Exception:
+        pass
+
     split_times = []
     split_moves = []
-    
-    relevant_grid_indices.append(solution_length - 1)
-    previous_time = 0
-    previous_move_count = 0
-    
-    for current_index in relevant_grid_indices[1:]:
-        current_move_count = current_index + 1
-        current_time = move_times[current_index]
-        split_duration = current_time - previous_time
-        moves_in_split = current_move_count - previous_move_count
-        moves_per_second = round(moves_in_split * 1000 / split_duration, 1)
-        
-        split_times.append(split_duration / 1000)
-        split_moves.append(moves_in_split)
-        previous_time = current_time
-        previous_move_count = current_move_count
-    
+
+    try:
+        relevant_grid_indices = [int(key) for key in grids_states.keys()
+                               if grids_states[key]['activeZone']['width'] + 1 >= len(puzzle_matrix[0]) / 2
+                               and grids_states[key]['activeZone']['height'] + 1 >= len(puzzle_matrix) / 2]
+        relevant_grid_indices.append(solution_length - 1)
+        previous_time = 0
+        previous_move_count = 0
+
+        for current_index in relevant_grid_indices[1:]:
+            current_move_count = current_index + 1
+            current_time = move_times[current_index]
+            split_duration = current_time - previous_time
+            moves_in_split = current_move_count - previous_move_count
+
+            split_times.append(split_duration / 1000)
+            split_moves.append(moves_in_split)
+            previous_time = current_time
+            previous_move_count = current_move_count
+    except Exception:
+        pass
+
     splits = split_times + split_moves
-    
-    time = move_times[-1]
-    moves = solution_length
-    tps = f"{(moves*1000 / time):.3f}"
-    scramble = scramble
-    width = len(puzzle_matrix[0])
-    height = len(puzzle_matrix)
-    size = f"{width}x{height}"
-    md = calculate_manhattan_distance(puzzle_matrix)
-    cubic = f"{(get_cubic_estimate(time, width, height)/1000):.3f}"
-    time = f"{(time/1000):.3f}"
-    mmd = f"{(moves / md):.3f}"
+
+    time = 0
+    moves = 0
+    tps = "0"
+    width = 0
+    height = 0
+    size = "?x?"
+
+    try:
+        width = len(puzzle_matrix[0])
+        height = len(puzzle_matrix)
+        size = f"{width}x{height}"
+    except Exception:
+        pass
+
+    try:
+        moves = solution_length
+        time = move_times[-1]
+        tps = f"{(moves*1000 / time):.3f}"
+    except Exception:
+        pass
+
+    try:
+        md = calculate_manhattan_distance(puzzle_matrix)
+        mmd = f"{(moves / md):.3f}"
+    except Exception:
+        md = 0
+        mmd = "0"
+
+    try:
+        cubic = f"{(get_cubic_estimate(time, width, height)/1000):.3f}"
+    except Exception:
+        cubic = "0"
+
+    try:
+        time = f"{(time/1000):.3f}"
+    except Exception:
+        time = "0"
 
     return [splits, time, moves, tps, scramble, size, md, mmd, cubic]
 
