@@ -14,6 +14,7 @@ import base64
 import zlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import time as time_module
 from pathlib import Path
@@ -1137,11 +1138,17 @@ def encode_video_ffmpeg(
     str(output_path)
     ]
 
+    startupinfo = None
+    if sys.platform == "win32":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0  # SW_HIDE
     result = subprocess.run(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        cwd=str(temp_dir)
+        cwd=str(temp_dir),
+        startupinfo=startupinfo
     )
 
     if result.returncode != 0:

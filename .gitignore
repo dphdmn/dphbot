@@ -7,3 +7,7 @@ last_fetch_info.txt
 merged_leaderboards/
 context_junk/
 test_replays/
+replay_gui/
+replay_gui/dist/
+replay_gui/build/
+*.spec
