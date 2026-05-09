@@ -11,11 +11,13 @@ from urllib.parse import quote
 from datetime import date, datetime, timedelta
 import time as timemodule
 from splits import splits_formatted as getsplits
-from replay_generator import ReplayGenerator
+from replay_generator import ReplayGenerator, expand_solution
+from replay_video import ReplayVideoGenerator, parse_replay_url
 from marathon import getMarathons
 from typing import Literal
 import subprocess
 import asyncio
+import tempfile
 import stats
 from power_data import DISPLAY_TYPE_MAP, CONTROL_TYPE_MAP, PB_TYPE_MAP, SOLVE_TYPE_MAP
 import re
@@ -64,6 +66,86 @@ def compress_array_to_string(input_array):
     compressed_data = zlib.compress(json_string.encode(), level=9)
     base64_encoded_string = base64.b64encode(compressed_data).decode()
     return encodeURIComponent(base64_encoded_string)
+
+async def generate_replay_video(msg, replay_url, output_path="replay.mp4", **kwargs):
+    """
+    Generate a replay MP4 with periodic Discord progress updates.
+    - msg: discord.Message or interaction followup to edit with progress
+    - replay_url: SlidySim replay URL (or raw base64 data)
+    - output_path: filename for the output MP4
+    - kwargs: passed to ReplayVideoGenerator.generate_simple_replay
+    Returns (discord.File, tmpdir_path) — caller must clean up tmpdir.
+    """
+    solution, tps, scramble, movetimes = parse_replay_url(replay_url)
+    print(f"[DEBUG] generate_replay_video: url_len={len(replay_url)}, "
+          f"solution_len={len(solution)}, solution_preview={solution[:80]!r}, "
+          f"tps={tps}, scramble={scramble}, movetimes_type={'list' if isinstance(movetimes, list) else movetimes}")
+
+    import subprocess, shutil
+    ffmpeg_found = shutil.which("ffmpeg")
+    print(f"[DEBUG] ffmpeg available: {ffmpeg_found!r}")
+
+    tmpdir = tempfile.mkdtemp(prefix="replay_vid_")
+    output = os.path.join(tmpdir, output_path)
+    print(f"[DEBUG] tmpdir={tmpdir}, output={output}")
+    progress = {"cur": 0, "tot": 0}
+    start_time = timemodule.time()
+
+    def progress_cb(cur, tot):
+        progress["cur"] = cur
+        progress["tot"] = tot
+
+    video_gen = ReplayVideoGenerator(temp_dir=tmpdir, cleanup_frames=False)
+
+    async def update_progress():
+        prev_cur = 0
+        encoding = False
+        while True:
+            c = progress["cur"]
+            t = progress["tot"]
+            if t == 0:
+                await asyncio.sleep(1)
+                continue
+            if c < prev_cur - 1 and prev_cur > 0:
+                encoding = True
+            prev_cur = c
+            if encoding:
+                await msg.edit(content=f"🎥 Almost done... (encoding) | {c}/{t} frames")
+            else:
+                pct = c * 100 / t
+                elapsed = timemodule.time() - start_time
+                rate = c / elapsed if elapsed > 0 and c > 0 else 0
+                eta = ""
+                if rate > 0 and c < t:
+                    eta_sec = (t - c) / rate
+                    eta = f" ETA: {eta_sec:.0f}s"
+                await msg.edit(content=f"🎥 Generating replay video: {pct:.0f}% | {c}/{t} frames{eta}")
+            await asyncio.sleep(5)
+
+    anim_task = asyncio.create_task(update_progress())
+    try:
+        video_path = await asyncio.to_thread(
+            video_gen.generate_simple_replay,
+            solution, output_path=output,
+            tps=tps, scramble=scramble, movetimes=movetimes,
+            show_progress=False,
+            external_progress_cb=progress_cb,
+            **kwargs
+        )
+        anim_task.cancel()
+        if not os.path.exists(video_path):
+            raise FileNotFoundError(f"Output file not found after generation: {video_path}")
+        print(f"[DEBUG] Video generation succeeded: {video_path} ({os.path.getsize(video_path)} bytes)")
+        return discord.File(video_path), tmpdir
+    except Exception as e:
+        anim_task.cancel()
+        import traceback
+        print(f"[DEBUG] Video generation FAILED!")
+        print(f"[DEBUG] Exception type: {type(e).__name__}")
+        print(f"[DEBUG] Exception message: {e}")
+        print(f"[DEBUG] Traceback:\n{''.join(traceback.format_exception(type(e), e, e.__traceback__))}")
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise
 
 class MyClient(discord.Client):
     def __init__(self):
@@ -1858,7 +1940,8 @@ async def admin_coolsolves_exe(
     pbtype="Type of personal best to retrieve",
     time_limit="Optional maximum time in seconds",
     moves_limit="Optional maximum moves",
-    hours_limit="Optional time window in hours (e.g., 24 for last day)"
+    hours_limit="Optional time window in hours (e.g., 24 for last day)",
+    create_video="Also generate an MP4 replay video (may take a moment)"
 )
 async def admin_getpb_exe(
     interaction: discord.Interaction,
@@ -1866,7 +1949,8 @@ async def admin_getpb_exe(
     pbtype: Literal["time", "moves", "tps"] = "time",
     time_limit: float = None,
     moves_limit: int = None,
-    hours_limit: int = None
+    hours_limit: int = None,
+    create_video: bool = False
 ):
     await interaction.response.defer(ephemeral=False)
     
@@ -2040,12 +2124,34 @@ async def admin_getpb_exe(
         
         embed.set_footer(text="Click the button below to view." if use_button else "Link provided above.")
 
+        video_file = None
+        video_tmpdir = None
+        if create_video:
+            msg = await interaction.followup.send("🎥 Generating replay video...", ephemeral=False)
+            try:
+                video_file, video_tmpdir = await generate_replay_video(
+                    msg, slidy_url
+                )
+            except Exception as e:
+                await msg.edit(content=f"❌ Video generation failed: {e}")
+                video_file = None
+
         if use_button:
             view = discord.ui.View()
             view.add_item(discord.ui.Button(label="View on SlidySim", url=final_link, style=discord.ButtonStyle.link))
-            await interaction.followup.send(embed=embed, view=view, ephemeral=False)
+            if video_file:
+                await interaction.followup.send(embed=embed, view=view, file=video_file, ephemeral=False)
+            else:
+                await interaction.followup.send(embed=embed, view=view, ephemeral=False)
         else:
-            await interaction.followup.send(content=f"# [View on SlidySim]({final_link})", embed=embed, ephemeral=False)
+            if video_file:
+                await interaction.followup.send(content=f"# [View on SlidySim]({final_link})", embed=embed, file=video_file, ephemeral=False)
+            else:
+                await interaction.followup.send(content=f"# [View on SlidySim]({final_link})", embed=embed, ephemeral=False)
+
+        if video_tmpdir:
+            import shutil
+            shutil.rmtree(video_tmpdir, ignore_errors=True)
 
     except Exception as e:
         await interaction.followup.send(f"Error: {str(e)}", ephemeral=False)
@@ -2189,25 +2295,27 @@ async def splits(
         await interaction.followup.send(f"An error occurred while processing: {str(e)}", ephemeral=True)
 
 
-@client.tree.command(description="Generate a replay link from your solution")
+@client.tree.command(description="Generate a replay link from your solution or replay URL")
 @app_commands.describe(
-    solution_text="Your solution string (e.g., R2ULDLU2R3D3L3UR2U2L2)",
-    file="Optional .txt file containing the solution",
+    solution_or_url="Solution string (e.g., R2ULDLU2R3D3L3UR2U2L2) or a SlidySim replay URL (starts with https://)",
+    file="Optional .txt file containing the solution or a replay URL",
     scramble="Optional scramble string (e.g., '7 1 0 3/5 9 2 8/...')",
     size="Optional puzzle size (e.g., '4x4', '3x3')",
     tps="Optional TPS value (do not use with time)",
     time="Optional solve time in seconds (e.g., 0.909) — do not use with tps",
-    movetimes="Optional comma-separated move times in ms (e.g., 0,16,50,90326947,...)"
+    movetimes="Optional comma-separated move times in ms (e.g., 0,16,50,90326947,...)",
+    create_video="Also generate an MP4 replay video (only for solutions < 2000 moves)"
 )
 async def makereplay(
     interaction: discord.Interaction,
-    solution_text: str = None,
+    solution_or_url: str = None,
     file: discord.Attachment = None,
     scramble: str = None,
     size: str = None,
     tps: float = None,
     time: float = None,
-    movetimes: str = None
+    movetimes: str = None,
+    create_video: bool = False
 ):
     await interaction.response.defer(ephemeral=False)
 
@@ -2216,9 +2324,11 @@ async def makereplay(
             await interaction.followup.send("Provide either tps or time, not both.", ephemeral=True)
             return
 
-        if file and solution_text:
+        if file and solution_or_url:
             await interaction.followup.send("Provide either a file or solution text, not both.", ephemeral=True)
             return
+
+        is_url_input = False
 
         if file:
             if not file.filename.endswith('.txt'):
@@ -2227,53 +2337,87 @@ async def makereplay(
             content = await file.read()
             if isinstance(content, bytes):
                 content = content.decode('utf-8')
-            solution = content.strip()
-        elif solution_text:
-            solution = solution_text.strip()
+            raw = content.strip()
+            if raw.startswith(('http://', 'https://')):
+                is_url_input = True
+                replay_url = raw
+            else:
+                solution = raw
+        elif solution_or_url:
+            raw = solution_or_url.strip()
+            if raw.startswith(('http://', 'https://')):
+                is_url_input = True
+                replay_url = raw
+            else:
+                solution = raw
         else:
-            await interaction.followup.send("You must provide a solution text or upload a .txt file.", ephemeral=True)
+            await interaction.followup.send("You must provide a solution text, a replay URL, or upload a .txt file.", ephemeral=True)
             return
 
-        parsed_size = None
-        if size:
-            parts = size.lower().split('x')
-            if len(parts) == 2:
-                try:
-                    parsed_size = (int(parts[0]), int(parts[1]))
-                except ValueError:
+        if is_url_input:
+            url_solution, url_tps, url_scramble, url_movetimes = parse_replay_url(replay_url)
+            solution = url_solution
+            if tps is None:
+                tps = url_tps
+            if scramble is None:
+                scramble = url_scramble
+            if isinstance(url_movetimes, list) and movetimes is None:
+                movetimes = url_movetimes
+        else:
+            parsed_size = None
+            if size:
+                parts = size.lower().split('x')
+                if len(parts) == 2:
+                    try:
+                        parsed_size = (int(parts[0]), int(parts[1]))
+                    except ValueError:
+                        await interaction.followup.send(f"Invalid size format: '{size}'. Use e.g. '4x4'.", ephemeral=True)
+                        return
+                else:
                     await interaction.followup.send(f"Invalid size format: '{size}'. Use e.g. '4x4'.", ephemeral=True)
                     return
-            else:
-                await interaction.followup.send(f"Invalid size format: '{size}'. Use e.g. '4x4'.", ephemeral=True)
-                return
 
-        parsed_movetimes = -1
-        if movetimes:
-            try:
-                parsed_movetimes = [int(x.strip()) for x in movetimes.split(',')]
-            except ValueError:
-                await interaction.followup.send("Invalid movetimes format. Provide comma-separated integers (ms).", ephemeral=True)
-                return
+            parsed_movetimes = -1
+            if movetimes:
+                try:
+                    parsed_movetimes = [int(x.strip()) for x in movetimes.split(',')]
+                except ValueError:
+                    await interaction.followup.send("Invalid movetimes format. Provide comma-separated integers (ms).", ephemeral=True)
+                    return
 
-        gen = ReplayGenerator()
-        kwargs = {}
-        if parsed_size:
-            kwargs['size'] = parsed_size
-        if scramble:
-            kwargs['scramble'] = scramble
-        if parsed_movetimes != -1:
-            kwargs['movetimes'] = parsed_movetimes
-        if tps is not None:
-            kwargs['tps'] = tps
-        if time is not None:
-            kwargs['time'] = time
+            gen = ReplayGenerator()
+            kwargs = {}
+            if parsed_size:
+                kwargs['size'] = parsed_size
+            if scramble:
+                kwargs['scramble'] = scramble
+            if parsed_movetimes != -1:
+                kwargs['movetimes'] = parsed_movetimes
+            if tps is not None:
+                kwargs['tps'] = tps
+            if time is not None:
+                kwargs['time'] = time
 
-        replay_url = gen.generate_simple_replay(solution, **kwargs)
+            replay_url = gen.generate_simple_replay(solution, **kwargs)
 
         try:
             splits_data = getsplits(replay_url)
         except Exception:
             splits_data = "splits are failed"
+
+        # Video generation
+        video_file = None
+        video_tmpdir = None
+        if create_video:
+            sol_expanded = expand_solution(solution)
+            if len(sol_expanded) < 2000:
+                msg = await interaction.followup.send("🎥 Generating replay video...", ephemeral=False)
+                try:
+                    video_file, video_tmpdir = await generate_replay_video(
+                        msg, replay_url
+                    )
+                except Exception as e:
+                    await msg.edit(content=f"❌ Video generation failed: {e}")
 
         url_length = len(replay_url)
         link_md = f"[Replay]({replay_url})"
@@ -2284,39 +2428,71 @@ async def makereplay(
             else:
                 content = link_md
             if len(content) <= 2000:
-                await interaction.followup.send(content)
+                await interaction.followup.send(content, file=video_file)
             else:
                 f = discord.File(io.StringIO(content), filename="replay_result.txt")
                 await interaction.followup.send(content="Result too large for message — see attached file.", file=f)
+                if video_file:
+                    await interaction.followup.send(file=video_file)
         else:
-            file_content = f"Replay URL (too long for direct link):\n{replay_url}"
-            f = discord.File(io.StringIO(file_content), filename="replay_url.txt")
+            file_content_str = f"Replay URL (too long for direct link):\n{replay_url}"
+            f = discord.File(io.StringIO(file_content_str), filename="replay_url.txt")
             if splits_data and splits_data not in ("Invalid splits data", "splits are failed"):
                 await interaction.followup.send(f"```\n{splits_data}\n```", file=f)
             else:
                 await interaction.followup.send("Replay URL too long for a direct link — see attached file.", file=f)
+            if video_file:
+                await interaction.followup.send(file=video_file)
+
+        if video_tmpdir:
+            import shutil
+            shutil.rmtree(video_tmpdir, ignore_errors=True)
 
     except Exception as e:
         await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
 
 
-@client.tree.command(description="[Admin only] Get a short URL one-click button from Replay File")
-async def admin_replay(interaction: discord.Interaction, file: discord.Attachment, metadata: str = None):
+@client.tree.command(description="[Admin only] Get a short URL one-click button from Replay File or URL")
+@app_commands.describe(
+    file="Optional .txt file containing the replay URL",
+    url="Optional replay URL directly (alternative to file)",
+    metadata="Optional metadata text for the embed title",
+    create_video="Also generate an MP4 replay video (may take a moment)"
+)
+async def admin_replay(
+    interaction: discord.Interaction,
+    file: discord.Attachment = None,
+    url: str = None,
+    metadata: str = None,
+    create_video: bool = False
+):
     ALLOWED_USER_IDS = [YOUR_USER_ID]
 
     if interaction.user.id not in ALLOWED_USER_IDS:
         await interaction.response.send_message("You are not authorized to use this command.", ephemeral=True)
         return
 
-    if not file.filename.endswith('.txt'):
-        await interaction.response.send_message("Please upload a .txt file.", ephemeral=True)
+    if not file and not url:
+        await interaction.response.send_message("Provide a file or a replay URL.", ephemeral=True)
+        return
+
+    if file and url:
+        await interaction.response.send_message("Provide either a file or a URL, not both.", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=False)
 
-    timestamp = str(int(timemodule.time()))
-    filename = f"{timestamp}.txt"
-    file_content = (await file.read()).decode('utf-8')
+    if url:
+        file_content = url
+        filename_ts = str(int(timemodule.time()))
+        filename = f"{filename_ts}_url.txt"
+    else:
+        if not file.filename.endswith('.txt'):
+            await interaction.followup.send("Please upload a .txt file.", ephemeral=True)
+            return
+        filename_ts = str(int(timemodule.time()))
+        filename = f"{filename_ts}.txt"
+        file_content = (await file.read()).decode('utf-8')
 
     try:
         slidy_url = save_replay_and_generate_url(file_content, filename)
@@ -2339,7 +2515,25 @@ async def admin_replay(interaction: discord.Interaction, file: discord.Attachmen
     view = discord.ui.View()
     view.add_item(discord.ui.Button(label="View on SlidySim", url=slidy_url, style=discord.ButtonStyle.link))
 
-    await interaction.followup.send(embed=embed, view=view, ephemeral=False)
+    video_file = None
+    video_tmpdir = None
+    if create_video:
+        msg = await interaction.followup.send("🎥 Generating replay video...", ephemeral=False)
+        try:
+            video_file, video_tmpdir = await generate_replay_video(
+                msg, file_content
+            )
+        except Exception as e:
+            await msg.edit(content=f"❌ Video generation failed: {e}")
+
+    if video_file:
+        await interaction.followup.send(embed=embed, view=view, file=video_file, ephemeral=False)
+    else:
+        await interaction.followup.send(embed=embed, view=view, ephemeral=False)
+
+    if video_tmpdir:
+        import shutil
+        shutil.rmtree(video_tmpdir, ignore_errors=True)
 
 
 @client.event
