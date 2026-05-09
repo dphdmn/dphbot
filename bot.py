@@ -2398,11 +2398,16 @@ async def makereplay(
             if time is not None:
                 kwargs['time'] = time
 
-            replay_url = gen.generate_simple_replay(solution, **kwargs)
+            try:
+                replay_url = gen.generate_simple_replay(solution, **kwargs)
+            except Exception as e:
+                await interaction.followup.send(f"DEBUG generate_simple_replay fail: {type(e).__name__}: {e}", ephemeral=True)
+                return
 
         try:
             splits_data = getsplits(replay_url)
-        except Exception:
+        except Exception as e:
+            await interaction.followup.send(f"DEBUG getsplits fail: {type(e).__name__}: {e}", ephemeral=True)
             splits_data = "splits are failed"
 
         # Video generation
@@ -2422,27 +2427,39 @@ async def makereplay(
         url_length = len(replay_url)
         link_md = f"[Replay]({replay_url})"
 
+        async def _try_send(content=None, file=None):
+            kw = {}
+            if content is not None:
+                kw['content'] = content
+            if file is not None:
+                kw['file'] = file
+            try:
+                return await interaction.followup.send(**kw)
+            except Exception as e:
+                await interaction.followup.send(f"DEBUG send fail: {type(e).__name__}: {e}", ephemeral=True)
+                return None
+
         if url_length <= 1950:
             if splits_data and splits_data not in ("Invalid splits data", "splits are failed"):
                 content = f"```\n{splits_data}\n```\n{link_md}"
             else:
                 content = link_md
             if len(content) <= 2000:
-                await interaction.followup.send(content, file=video_file)
+                await _try_send(content=content, file=video_file)
             else:
-                f = discord.File(io.StringIO(content), filename="replay_result.txt")
-                await interaction.followup.send(content="Result too large for message — see attached file.", file=f)
+                f = discord.File(io.BytesIO(content.encode('utf-8')), filename="replay_result.txt")
+                await _try_send(content="Result too large for message — see attached file.", file=f)
                 if video_file:
-                    await interaction.followup.send(file=video_file)
+                    await _try_send(file=video_file)
         else:
             file_content_str = f"Replay URL (too long for direct link):\n{replay_url}"
-            f = discord.File(io.StringIO(file_content_str), filename="replay_url.txt")
+            f = discord.File(io.BytesIO(file_content_str.encode('utf-8')), filename="replay_url.txt")
             if splits_data and splits_data not in ("Invalid splits data", "splits are failed"):
-                await interaction.followup.send(f"```\n{splits_data}\n```", file=f)
+                await _try_send(content=f"```\n{splits_data}\n```", file=f)
             else:
-                await interaction.followup.send("Replay URL too long for a direct link — see attached file.", file=f)
+                await _try_send(content="Replay URL too long for a direct link — see attached file.", file=f)
             if video_file:
-                await interaction.followup.send(file=video_file)
+                await _try_send(file=video_file)
 
         if video_tmpdir:
             import shutil
