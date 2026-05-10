@@ -87,17 +87,11 @@ async def generate_replay_video(msg, replay_url, output_path="replay.mp4", **kwa
     Returns (discord.File, tmpdir_path) — caller must clean up tmpdir.
     """
     solution, tps, scramble, movetimes = parse_replay_url(replay_url)
-    print(f"[DEBUG] generate_replay_video: url_len={len(replay_url)}, "
-          f"solution_len={len(solution)}, solution_preview={solution[:80]!r}, "
-          f"tps={tps}, scramble={scramble}, movetimes_type={'list' if isinstance(movetimes, list) else movetimes}")
 
     import subprocess, shutil
-    ffmpeg_found = shutil.which("ffmpeg")
-    print(f"[DEBUG] ffmpeg available: {ffmpeg_found!r}")
 
     tmpdir = tempfile.mkdtemp(prefix="replay_vid_")
     output = os.path.join(tmpdir, output_path)
-    print(f"[DEBUG] tmpdir={tmpdir}, output={output}")
     progress = {"cur": 0, "tot": 0}
     start_time = timemodule.time()
 
@@ -107,9 +101,15 @@ async def generate_replay_video(msg, replay_url, output_path="replay.mp4", **kwa
 
     video_gen = ReplayVideoGenerator(temp_dir=tmpdir, cleanup_frames=False)
 
+    def fmt_elapsed(secs):
+        if secs < 60:
+            return f"{secs:.1f}s"
+        return f"{int(secs//60)}m {secs%60:.0f}s"
+
     async def update_progress():
         prev_cur = 0
-        encoding = False
+        phase = 0
+        labels = ["Rendering frames", "Encoding video"]
         while True:
             c = progress["cur"]
             t = progress["tot"]
@@ -117,19 +117,17 @@ async def generate_replay_video(msg, replay_url, output_path="replay.mp4", **kwa
                 await asyncio.sleep(1)
                 continue
             if c < prev_cur - 1 and prev_cur > 0:
-                encoding = True
+                phase = min(phase + 1, len(labels) - 1)
             prev_cur = c
-            if encoding:
-                await msg.edit(content=f"🎥 Almost done... (encoding) | {c}/{t} frames")
-            else:
-                pct = c * 100 / t
-                elapsed = timemodule.time() - start_time
-                rate = c / elapsed if elapsed > 0 and c > 0 else 0
-                eta = ""
-                if rate > 0 and c < t:
-                    eta_sec = (t - c) / rate
-                    eta = f" ETA: {eta_sec:.0f}s"
-                await msg.edit(content=f"🎥 Generating replay video: {pct:.0f}% | {c}/{t} frames{eta}")
+            label = labels[phase]
+            elapsed = timemodule.time() - start_time
+            pct = c * 100 / t
+            rate = c / elapsed if elapsed > 0 and c > 0 else 0
+            eta = ""
+            if rate > 0 and c < t:
+                eta_sec = (t - c) / rate
+                eta = f" — ETA {eta_sec:.0f}s"
+            await msg.edit(content=f"🎥 {label}: {pct:.0f}% | {c}/{t}{eta}")
             await asyncio.sleep(5)
 
     anim_task = asyncio.create_task(update_progress())
@@ -145,15 +143,17 @@ async def generate_replay_video(msg, replay_url, output_path="replay.mp4", **kwa
         anim_task.cancel()
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Output file not found after generation: {video_path}")
-        print(f"[DEBUG] Video generation succeeded: {video_path} ({os.path.getsize(video_path)} bytes)")
+        elapsed = timemodule.time() - start_time
+        await msg.edit(content=f"✅ Done! Video generated in {fmt_elapsed(elapsed)}")
         return discord.File(video_path), tmpdir
+    except CancelError:
+        anim_task.cancel()
+        await msg.edit(content="❌ Video generation cancelled.")
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise
     except Exception as e:
         anim_task.cancel()
-        import traceback
-        print(f"[DEBUG] Video generation FAILED!")
-        print(f"[DEBUG] Exception type: {type(e).__name__}")
-        print(f"[DEBUG] Exception message: {e}")
-        print(f"[DEBUG] Traceback:\n{''.join(traceback.format_exception(type(e), e, e.__traceback__))}")
+        await msg.edit(content=f"❌ Video generation failed: {e}")
         shutil.rmtree(tmpdir, ignore_errors=True)
         raise
 
@@ -1952,28 +1952,15 @@ async def admin_coolsolves_exe(
     moves_limit="Optional maximum moves",
     hours_limit="Optional time window in hours (e.g., 24 for last day)",
     create_video="Also generate an MP4 replay video (may take a moment)",
-    quality="Render quality: 1.0 (fast) to 4.0 (ultra)",
-    compression="Video quality: 10–40, lower = better quality (default: 18)",
-    fps="Output framerate (default: 60)",
+    quality="Render quality: 1 (High, default) or 2 (Ultra)",
+    compression="Video compression CRF 10–40, lower = better quality (default: 18)",
+    fps="Output framerate 1–240 (default: 60)",
     force_fringe="Force fringe color pattern"
 )
 @app_commands.choices(
     quality=[
-        app_commands.Choice(name="1.0 — Fast (default)", value=1.0),
-        app_commands.Choice(name="2.0 — Balanced", value=2.0),
-        app_commands.Choice(name="3.0 — High", value=3.0),
-        app_commands.Choice(name="4.0 — Ultra", value=4.0),
-    ],
-    compression=[
-        app_commands.Choice(name="12 — High quality", value=12),
-        app_commands.Choice(name="18 — Balanced (default)", value=18),
-        app_commands.Choice(name="24 — Smaller file", value=24),
-        app_commands.Choice(name="30 — Very small", value=30),
-    ],
-    fps=[
-        app_commands.Choice(name="30 FPS", value=30),
-        app_commands.Choice(name="60 FPS (default)", value=60),
-        app_commands.Choice(name="120 FPS", value=120),
+        app_commands.Choice(name="1 — High (default)", value=1),
+        app_commands.Choice(name="2 — Ultra", value=2),
     ]
 )
 async def admin_getpb_exe(
@@ -1984,7 +1971,7 @@ async def admin_getpb_exe(
     moves_limit: int = None,
     hours_limit: int = None,
     create_video: bool = False,
-    quality: float = 1.0,
+    quality: int = 1,
     compression: int = 18,
     fps: int = 60,
     force_fringe: bool = False
@@ -1992,6 +1979,13 @@ async def admin_getpb_exe(
     await interaction.response.defer(ephemeral=False)
     
     try:
+        if not (1 <= fps <= 240):
+            await interaction.followup.send("FPS must be between 1 and 240.", ephemeral=True)
+            return
+        if not (10 <= compression <= 40):
+            await interaction.followup.send("Compression must be between 10 and 40.", ephemeral=True)
+            return
+
         if interaction.user.id != YOUR_USER_ID:
             await interaction.followup.send(
                 "You are not authorized to use this command.",
@@ -2346,28 +2340,15 @@ async def splits(
     time="Optional solve time in seconds (e.g., 0.909) — do not use with tps",
     movetimes="Optional comma-separated move times in ms (e.g., 0,16,50,90326947,...)",
     create_video="Also generate an MP4 replay video (only for solutions < 2000 moves)",
-    quality="Render quality: 1.0 (fast) to 4.0 (ultra) — higher uses more VRAM (default: 1.0)",
-    compression="Video quality: 10–40, lower = better quality but larger file (default: 18)",
-    fps="Output framerate (default: 60)",
+    quality="Render quality: 1 (High, default) or 2 (Ultra)",
+    compression="Video compression CRF 10–40, lower = better quality but larger file (default: 18)",
+    fps="Output framerate 1–240 (default: 60)",
     force_fringe="Force fringe color pattern instead of auto-detecting grids"
 )
 @app_commands.choices(
     quality=[
-        app_commands.Choice(name="1.0 — Fast (default)", value=1.0),
-        app_commands.Choice(name="2.0 — Balanced", value=2.0),
-        app_commands.Choice(name="3.0 — High", value=3.0),
-        app_commands.Choice(name="4.0 — Ultra", value=4.0),
-    ],
-    compression=[
-        app_commands.Choice(name="12 — High quality", value=12),
-        app_commands.Choice(name="18 — Balanced (default)", value=18),
-        app_commands.Choice(name="24 — Smaller file", value=24),
-        app_commands.Choice(name="30 — Very small", value=30),
-    ],
-    fps=[
-        app_commands.Choice(name="30 FPS", value=30),
-        app_commands.Choice(name="60 FPS (default)", value=60),
-        app_commands.Choice(name="120 FPS", value=120),
+        app_commands.Choice(name="1 — High (default)", value=1),
+        app_commands.Choice(name="2 — Ultra", value=2),
     ]
 )
 async def makereplay(
@@ -2380,7 +2361,7 @@ async def makereplay(
     time: float = None,
     movetimes: str = None,
     create_video: bool = False,
-    quality: float = 1.0,
+    quality: int = 1,
     compression: int = 18,
     fps: int = 60,
     force_fringe: bool = False
@@ -2388,6 +2369,13 @@ async def makereplay(
     await interaction.response.defer(ephemeral=False)
 
     try:
+        if not (1 <= fps <= 240):
+            await interaction.followup.send("FPS must be between 1 and 240.", ephemeral=True)
+            return
+        if not (10 <= compression <= 40):
+            await interaction.followup.send("Compression must be between 10 and 40.", ephemeral=True)
+            return
+
         if tps is not None and time is not None:
             await interaction.followup.send("Provide either tps or time, not both.", ephemeral=True)
             return
@@ -2547,28 +2535,15 @@ async def makereplay(
     url="Optional replay URL directly (alternative to file)",
     metadata="Optional metadata text for the embed title",
     create_video="Also generate an MP4 replay video (may take a moment)",
-    quality="Render quality: 1.0 (fast) to 4.0 (ultra)",
-    compression="Video quality: 10–40, lower = better quality (default: 18)",
-    fps="Output framerate (default: 60)",
+    quality="Render quality: 1 (High, default) or 2 (Ultra)",
+    compression="Video compression CRF 10–40, lower = better quality (default: 18)",
+    fps="Output framerate 1–240 (default: 60)",
     force_fringe="Force fringe color pattern"
 )
 @app_commands.choices(
     quality=[
-        app_commands.Choice(name="1.0 — Fast (default)", value=1.0),
-        app_commands.Choice(name="2.0 — Balanced", value=2.0),
-        app_commands.Choice(name="3.0 — High", value=3.0),
-        app_commands.Choice(name="4.0 — Ultra", value=4.0),
-    ],
-    compression=[
-        app_commands.Choice(name="12 — High quality", value=12),
-        app_commands.Choice(name="18 — Balanced (default)", value=18),
-        app_commands.Choice(name="24 — Smaller file", value=24),
-        app_commands.Choice(name="30 — Very small", value=30),
-    ],
-    fps=[
-        app_commands.Choice(name="30 FPS", value=30),
-        app_commands.Choice(name="60 FPS (default)", value=60),
-        app_commands.Choice(name="120 FPS", value=120),
+        app_commands.Choice(name="1 — High (default)", value=1),
+        app_commands.Choice(name="2 — Ultra", value=2),
     ]
 )
 async def admin_replay(
@@ -2577,12 +2552,19 @@ async def admin_replay(
     url: str = None,
     metadata: str = None,
     create_video: bool = False,
-    quality: float = 1.0,
+    quality: int = 1,
     compression: int = 18,
     fps: int = 60,
     force_fringe: bool = False
 ):
     ALLOWED_USER_IDS = [YOUR_USER_ID]
+
+    if not (1 <= fps <= 240):
+        await interaction.response.send_message("FPS must be between 1 and 240.", ephemeral=True)
+        return
+    if not (10 <= compression <= 40):
+        await interaction.response.send_message("Compression must be between 10 and 40.", ephemeral=True)
+        return
 
     if interaction.user.id not in ALLOWED_USER_IDS:
         await interaction.response.send_message("You are not authorized to use this command.", ephemeral=True)
