@@ -2405,7 +2405,7 @@ async def admin_latest_exe(interaction: discord.Interaction):
 
 @client.tree.command(description="Get Splits of Replay File or Text")
 @app_commands.describe(
-    file="Optional .txt replay file",
+    file="Optional replay file",
     text="Or paste replay text directly here"
 )
 async def splits(
@@ -2417,10 +2417,6 @@ async def splits(
 
     try:
         if file:
-            if not file.filename.endswith('.txt'):
-                await interaction.followup.send("Please upload a .txt file.", ephemeral=True)
-                return
-
             file_content = await file.read()
             if isinstance(file_content, bytes):
                 file_content = file_content.decode('utf-8')
@@ -2456,7 +2452,7 @@ async def splits(
 @client.tree.command(description="Generate a replay link from your solution or replay URL")
 @app_commands.describe(
     solution_or_url="Solution string (e.g., R2ULDLU2R3D3L3UR2U2L2) or a SlidySim replay URL (starts with https://)",
-    file="Optional .txt file containing the solution or a replay URL",
+    file="Optional file containing the solution or a replay URL",
     scramble="Optional scramble string (e.g., '7 1 0 3/5 9 2 8/...')",
     size="Optional puzzle size (e.g., '4x4', '3x3')",
     tps="Optional TPS value (do not use with time)",
@@ -2510,9 +2506,6 @@ async def makereplay(
         is_url_input = False
 
         if file:
-            if not file.filename.endswith('.txt'):
-                await interaction.followup.send("Please upload a .txt file.", ephemeral=True)
-                return
             content = await file.read()
             if isinstance(content, bytes):
                 content = content.decode('utf-8')
@@ -2530,7 +2523,7 @@ async def makereplay(
             else:
                 solution = raw
         else:
-            await interaction.followup.send("You must provide a solution text, a replay URL, or upload a .txt file.", ephemeral=True)
+            await interaction.followup.send("You must provide a solution text, a replay URL, or upload a file.", ephemeral=True)
             return
 
         if is_url_input:
@@ -2678,7 +2671,7 @@ async def makereplay(
 
 @client.tree.command(description="[Admin only] Get a short URL one-click button from Replay File or URL")
 @app_commands.describe(
-    file="Optional .txt file containing the replay URL",
+    file="Optional file containing the replay URL",
     url="Optional replay URL directly (alternative to file)",
     metadata="Optional metadata text for the embed title",
     create_video="Also generate an MP4 replay video (may take a moment)",
@@ -2732,9 +2725,6 @@ async def admin_replay(
         filename_ts = str(int(timemodule.time()))
         filename = f"{filename_ts}_url.txt"
     else:
-        if not file.filename.endswith('.txt'):
-            await interaction.followup.send("Please upload a .txt file.", ephemeral=True)
-            return
         filename_ts = str(int(timemodule.time()))
         filename = f"{filename_ts}.txt"
         file_content = (await file.read()).decode('utf-8')
