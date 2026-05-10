@@ -49,6 +49,7 @@ REPO_LOCAL_DIR = os.path.join(LOCAL_PATH, REPO_NAME)
 GENERATED_DIR = os.path.join(REPO_LOCAL_DIR, SUBFOLDERS)
 
 updateweb_running = False
+video_generation_running = False
 
 # ───────────────── helper functions (unchanged) ─────────────────
 def save_replay_and_generate_url(file_content: str, filename: str) -> str:
@@ -82,157 +83,164 @@ async def generate_replay_video(msg, replay_url, output_path="replay.mp4", **kwa
     from replay_video import pick_tile_size as _pick_tile_size
     from replay_generator import expand_solution, parse_scramble_guess
 
-    solution, tps, scramble, movetimes = parse_replay_url(replay_url)
-
-    sol_len = len(expand_solution(solution))
-
-    # Safety checks
-    if movetimes not in (None, -1):
-        last_mt = movetimes[-1] if isinstance(movetimes, list) else movetimes
-        if last_mt > 30000:
-            raise ValueError(f"Video would be {last_mt}ms long, exceeding the 30000ms limit.")
-
-    check_tps = tps if tps is not None else (15000 if movetimes in (None, -1) else None)
-    if check_tps is not None:
-        estimated_ms = sol_len / (check_tps / 1000) * 1000
-        if estimated_ms > 30000:
-            raise ValueError(f"Estimated video length ({estimated_ms:.0f}ms) exceeds the 30000ms limit.")
-
-    # Puzzle info for header
+    global video_generation_running
+    if video_generation_running:
+        raise RuntimeError("Another video is already being generated. Please wait.")
+    video_generation_running = True
     try:
-        _m = parse_scramble_guess(solution)
-        w, h = len(_m[0]), len(_m)
-    except Exception:
-        w = h = "?"
-    quality = kwargs.get("quality", 1)
-    total_frames = sol_len + 1
-    tile_size = _pick_tile_size(w, h) if isinstance(w, int) else "?"
-    tps_display = tps if tps else kwargs.get("tps", "auto")
+        solution, tps, scramble, movetimes = parse_replay_url(replay_url)
 
-    tmpdir = tempfile.mkdtemp(prefix="replay_vid_")
-    output = os.path.join(tmpdir, output_path)
-    start_time = timemodule.time()
+        sol_len = len(expand_solution(solution))
 
-    # ── DiscordProgress — mirrors TerminalProgress from replay_video.py ──
-    class DiscordProgress:
-        def __init__(self):
-            self.start_time = timemodule.time()
-            self.last_update_time = self.start_time
-            self.last_current = 0
-            self.window_rate = 0.0
-            self._last_edit_time = 0.0
-            self._gpu_stats = None
-            self._phase_offset = 0
-            self._phase0_total = None
-            self._phase_prev_cur = None
-            self.total = 0
-            self.last_line = ""
+        # Safety checks
+        if movetimes not in (None, -1):
+            last_mt = movetimes[-1] if isinstance(movetimes, list) else movetimes
+            if last_mt > 300000:
+                raise ValueError(f"Video would be {last_mt}ms long, exceeding the 30000ms limit.")
 
-        @staticmethod
-        def _time_str(t):
-            if t >= 3600:
-                return f"{t/3600:.0f}h{(t%3600)/60:.0f}m"
-            elif t >= 60:
-                return f"{t/60:.0f}m{t%60:.0f}s"
-            return f"{t:.1f}s"
+        check_tps = tps if tps is not None else (15000 if movetimes in (None, -1) else None)
+        if check_tps is not None:
+            estimated_ms = sol_len / (check_tps / 1000) * 1000
+            if estimated_ms > 300000:
+                raise ValueError(f"Estimated video length ({estimated_ms:.0f}ms) exceeds the 300000ms limit.")
 
-        def _build_line(self, current, elapsed, rate, eta):
-            frac = current / self.total if self.total > 0 else 0
-            pct = frac * 100
-            total_t = elapsed + eta
-            suffix = f" {pct:.0f}% | {rate:.0f}/s | {self._time_str(elapsed)}/{self._time_str(total_t)}"
-            if self._gpu_stats and self._gpu_stats.get("batch_size"):
-                s = self._gpu_stats
-                mb = s.get("mem_used_mb", 0) / 1024
-                tb = s.get("total_mem_mb", 0) / 1024
-                suffix += f" | {mb:.1f}/{tb:.1f}GB | Batch: {s.get('batch_size', 0)}"
-            bar_w = 40
-            filled = int(bar_w * frac)
-            bar = "#" * filled + "-" * (bar_w - filled)
-            return f"Render: [{bar}]{suffix}"
+        # Puzzle info for header
+        try:
+            _m = parse_scramble_guess(solution)
+            w, h = len(_m[0]), len(_m)
+        except Exception:
+            w = h = "?"
+        quality = kwargs.get("quality", 1)
+        total_frames = sol_len + 1
+        tile_size = _pick_tile_size(w, h) if isinstance(w, int) else "?"
+        tps_display = tps if tps else kwargs.get("tps", "auto")
 
-        def __call__(self, cur, tot, **kwargs):
-            if (self._phase_prev_cur is not None and
-                cur < self._phase_prev_cur and
-                self._phase0_total is not None):
-                self._phase_offset += self._phase0_total
-            self._phase_prev_cur = cur
-            if self._phase0_total is None:
-                self._phase0_total = tot
-            adjusted_cur = cur + self._phase_offset
-            adjusted_tot = self._phase0_total * 2
-            self.total = adjusted_tot
-            gpu_stats = kwargs.get("gpu_stats")
-            if gpu_stats is not None:
-                self._gpu_stats = gpu_stats
+        tmpdir = tempfile.mkdtemp(prefix="replay_vid_")
+        output = os.path.join(tmpdir, output_path)
+        start_time = timemodule.time()
 
-            now = timemodule.time()
-            elapsed = now - self.start_time
-            window = now - self.last_update_time
-            if window > 0.5 and adjusted_cur > self.last_current:
-                instant = (adjusted_cur - self.last_current) / window
-                if self.window_rate <= 0:
-                    self.window_rate = instant
-                else:
-                    self.window_rate = self.window_rate * 0.5 + instant * 0.5
-                self.last_update_time = now
-                self.last_current = adjusted_cur
-            rate = self.window_rate if self.window_rate > 0 else adjusted_cur / elapsed if elapsed > 0 else 0
-            eta = (self.total - adjusted_cur) / rate if rate > 0 else 0
-            self.last_line = self._build_line(adjusted_cur, elapsed, rate, eta)
+        # ── DiscordProgress — mirrors TerminalProgress from replay_video.py ──
+        class DiscordProgress:
+            def __init__(self):
+                self.start_time = timemodule.time()
+                self.last_update_time = self.start_time
+                self.last_current = 0
+                self.window_rate = 0.0
+                self._last_edit_time = 0.0
+                self._gpu_stats = None
+                self._phase_offset = 0
+                self._phase0_total = None
+                self._phase_prev_cur = None
+                self.total = 0
+                self.last_line = ""
 
-    dp = DiscordProgress()
-    dp.total = total_frames * 2
+            @staticmethod
+            def _time_str(t):
+                if t >= 3600:
+                    return f"{t/3600:.0f}h{(t%3600)/60:.0f}m"
+                elif t >= 60:
+                    return f"{t/60:.0f}m{t%60:.0f}s"
+                return f"{t:.1f}s"
 
-    # Initial header
-    header = f"Puzzle: {w}x{h}, Moves: {sol_len}, TPS: {tps_display}"
-    tile = f"Tile size: {tile_size}px x quality={quality}, Frames: {total_frames}"
-    header_block = f"{header}\n{tile}"
-    bar = dp._build_line(0, 0, 0, 0)
-    await msg.edit(content=f"{header_block}\n{bar}")
+            def _build_line(self, current, elapsed, rate, eta):
+                frac = current / self.total if self.total > 0 else 0
+                pct = frac * 100
+                total_t = elapsed + eta
+                suffix = f" {pct:.0f}% | {rate:.0f}/s | {self._time_str(elapsed)}/{self._time_str(total_t)}"
+                if self._gpu_stats and self._gpu_stats.get("batch_size"):
+                    s = self._gpu_stats
+                    mb = s.get("mem_used_mb", 0) / 1024
+                    tb = s.get("total_mem_mb", 0) / 1024
+                    suffix += f" | {mb:.1f}/{tb:.1f}GB | Batch: {s.get('batch_size', 0)}"
+                bar_w = 40
+                filled = int(bar_w * frac)
+                bar = "#" * filled + "-" * (bar_w - filled)
+                return f"Render: [{bar}]{suffix}"
 
-    def progress_cb(cur, tot, **kw):
-        dp(cur, tot, **kw)
+            def __call__(self, cur, tot, **kwargs):
+                if (self._phase_prev_cur is not None and
+                    cur < self._phase_prev_cur and
+                    self._phase0_total is not None):
+                    self._phase_offset += self._phase0_total
+                self._phase_prev_cur = cur
+                if self._phase0_total is None:
+                    self._phase0_total = tot
+                adjusted_cur = cur + self._phase_offset
+                adjusted_tot = self._phase0_total * 2
+                self.total = adjusted_tot
+                gpu_stats = kwargs.get("gpu_stats")
+                if gpu_stats is not None:
+                    self._gpu_stats = gpu_stats
 
-    video_gen = ReplayVideoGenerator(temp_dir=tmpdir, cleanup_frames=False)
+                now = timemodule.time()
+                elapsed = now - self.start_time
+                window = now - self.last_update_time
+                if window > 0.5 and adjusted_cur > self.last_current:
+                    instant = (adjusted_cur - self.last_current) / window
+                    if self.window_rate <= 0:
+                        self.window_rate = instant
+                    else:
+                        self.window_rate = self.window_rate * 0.5 + instant * 0.5
+                    self.last_update_time = now
+                    self.last_current = adjusted_cur
+                rate = self.window_rate if self.window_rate > 0 else adjusted_cur / elapsed if elapsed > 0 else 0
+                eta = (self.total - adjusted_cur) / rate if rate > 0 else 0
+                self.last_line = self._build_line(adjusted_cur, elapsed, rate, eta)
 
-    async def poll_display():
-        while True:
-            await asyncio.sleep(3)
-            line = dp.last_line
-            if line:
-                try:
-                    await msg.edit(content=f"{header_block}\n{line}")
-                except Exception:
-                    pass
+        dp = DiscordProgress()
+        dp.total = total_frames * 2
 
-    poll_task = asyncio.create_task(poll_display())
-    try:
-        video_path = await asyncio.to_thread(
-            video_gen.generate_simple_replay,
-            solution, output_path=output,
-            tps=tps, scramble=scramble, movetimes=movetimes,
-            show_progress=False,
-            external_progress_cb=progress_cb,
-            **kwargs
-        )
-        poll_task.cancel()
-        if not os.path.exists(video_path):
-            raise FileNotFoundError(f"Output file not found after generation: {video_path}")
-        elapsed = timemodule.time() - start_time
-        fn = os.path.basename(video_path)
-        await msg.edit(content=f"✅ Done! Video saved to: {fn} (took {elapsed:.1f}s)")
-        return discord.File(video_path), tmpdir
-    except CancelError:
-        poll_task.cancel()
-        await msg.edit(content="❌ Video generation cancelled.")
-        shutil.rmtree(tmpdir, ignore_errors=True)
-        raise
-    except Exception as e:
-        poll_task.cancel()
-        await msg.edit(content=f"❌ Video generation failed: {e}")
-        shutil.rmtree(tmpdir, ignore_errors=True)
-        raise
+        # Initial header
+        header = f"Puzzle: {w}x{h}, Moves: {sol_len}, TPS: {tps_display}"
+        tile = f"Tile size: {tile_size}px x quality={quality}, Frames: {total_frames}"
+        header_block = f"{header}\n{tile}"
+        bar = dp._build_line(0, 0, 0, 0)
+        await msg.edit(content=f"{header_block}\n{bar}")
+
+        def progress_cb(cur, tot, **kw):
+            dp(cur, tot, **kw)
+
+        video_gen = ReplayVideoGenerator(temp_dir=tmpdir, cleanup_frames=False)
+
+        async def poll_display():
+            while True:
+                await asyncio.sleep(3)
+                line = dp.last_line
+                if line:
+                    try:
+                        await msg.edit(content=f"{header_block}\n{line}")
+                    except Exception:
+                        pass
+
+        poll_task = asyncio.create_task(poll_display())
+        try:
+            video_path = await asyncio.to_thread(
+                video_gen.generate_simple_replay,
+                solution, output_path=output,
+                tps=tps, scramble=scramble, movetimes=movetimes,
+                show_progress=False,
+                external_progress_cb=progress_cb,
+                **kwargs
+            )
+            poll_task.cancel()
+            if not os.path.exists(video_path):
+                raise FileNotFoundError(f"Output file not found after generation: {video_path}")
+            elapsed = timemodule.time() - start_time
+            fn = os.path.basename(video_path)
+            await msg.edit(content=f"✅ Done! Video saved to: {fn} (took {elapsed:.1f}s)")
+            return discord.File(video_path), tmpdir
+        except CancelError:
+            poll_task.cancel()
+            await msg.edit(content="❌ Video generation cancelled.")
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            raise
+        except Exception as e:
+            poll_task.cancel()
+            await msg.edit(content=f"❌ Video generation failed: {e}")
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            raise
+    finally:
+        video_generation_running = False
 
 class MyClient(discord.Client):
     def __init__(self):
