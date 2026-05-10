@@ -89,13 +89,13 @@ async def generate_replay_video(msg, replay_url, output_path="replay.mp4", **kwa
     # Safety checks
     if movetimes not in (None, -1):
         last_mt = movetimes[-1] if isinstance(movetimes, list) else movetimes
-        if last_mt > 60000:
-            raise ValueError(f"Video would be {last_mt}ms long, exceeding the 60000ms limit.")
+        if last_mt > 30000:
+            raise ValueError(f"Video would be {last_mt}ms long, exceeding the 30000ms limit.")
 
     if tps is not None:
-        estimated_s = sol_len / (tps / 1000)
-        if estimated_s > 600:
-            raise ValueError(f"Estimated video length ({estimated_s:.0f}) exceeds the 60000ms limit.")
+        estimated_ms = sol_len / (tps / 1000) * 1000
+        if estimated_ms > 30000:
+            raise ValueError(f"Estimated video length ({estimated_ms:.0f}ms) exceeds the 30000ms limit.")
 
     # Puzzle info for header
     try:
@@ -2552,19 +2552,17 @@ async def makereplay(
         video_file = None
         video_tmpdir = None
         if create_video:
-            sol_expanded = expand_solution(solution)
-            if len(sol_expanded) < 4000:
-                msg = await interaction.followup.send("🎥 Generating replay video...", ephemeral=False)
-                try:
-                    video_file, video_tmpdir = await generate_replay_video(
-                        msg, replay_url,
-                        quality=quality,
-                        compression=compression,
-                        fps=fps,
-                        force_fringe=force_fringe
-                    )
-                except Exception as e:
-                    await msg.edit(content=f"❌ Video generation failed: {e}")
+            msg = await interaction.followup.send("🎥 Generating replay video...", ephemeral=False)
+            try:
+                video_file, video_tmpdir = await generate_replay_video(
+                    msg, replay_url,
+                    quality=quality,
+                    compression=compression,
+                    fps=fps,
+                    force_fringe=force_fringe
+                )
+            except Exception as e:
+                await msg.edit(content=f"❌ Video generation failed: {e}")
 
         url_length = len(replay_url)
         link_md = f"[Replay]({replay_url})"
