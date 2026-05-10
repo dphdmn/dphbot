@@ -92,8 +92,9 @@ async def generate_replay_video(msg, replay_url, output_path="replay.mp4", **kwa
         if last_mt > 30000:
             raise ValueError(f"Video would be {last_mt}ms long, exceeding the 30000ms limit.")
 
-    if tps is not None:
-        estimated_ms = sol_len / (tps / 1000) * 1000
+    check_tps = tps if tps is not None else (15000 if movetimes in (None, -1) else None)
+    if check_tps is not None:
+        estimated_ms = sol_len / (check_tps / 1000) * 1000
         if estimated_ms > 30000:
             raise ValueError(f"Estimated video length ({estimated_ms:.0f}ms) exceeds the 30000ms limit.")
 
