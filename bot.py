@@ -84,8 +84,20 @@ async def generate_replay_video(msg, replay_url, output_path="replay.mp4", **kwa
 
     solution, tps, scramble, movetimes = parse_replay_url(replay_url)
 
-    # Puzzle info for header
     sol_len = len(expand_solution(solution))
+
+    # Safety checks
+    if movetimes not in (None, -1):
+        last_mt = movetimes[-1] if isinstance(movetimes, list) else movetimes
+        if last_mt > 60000:
+            raise ValueError(f"Video would be {last_mt}ms long, exceeding the 60000ms limit.")
+
+    if tps is not None:
+        estimated_s = sol_len / (tps / 1000)
+        if estimated_s > 600:
+            raise ValueError(f"Estimated video length ({estimated_s:.0f}) exceeds the 60000ms limit.")
+
+    # Puzzle info for header
     try:
         _m = parse_scramble_guess(solution)
         w, h = len(_m[0]), len(_m)
