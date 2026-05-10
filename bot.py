@@ -80,6 +80,7 @@ def compress_array_to_string(input_array):
 
 async def generate_replay_video(msg, replay_url, output_path="replay.mp4", **kwargs):
     import subprocess, shutil
+    import logging, threading
     from replay_video import pick_tile_size as _pick_tile_size
     from replay_generator import expand_solution, parse_scramble_guess
 
@@ -87,6 +88,20 @@ async def generate_replay_video(msg, replay_url, output_path="replay.mp4", **kwa
     if video_generation_running:
         raise RuntimeError("Another video is already being generated. Please wait.")
     video_generation_running = True
+
+    # Watch GPU OOM log messages to abort generation immediately
+    oom_event = threading.Event()
+    oom_message = [None]
+    _replay_logger = logging.getLogger("replay_debug")
+    class _OomHandler(logging.Handler):
+        def emit(self, record):
+            msg = record.getMessage()
+            if "GPU OOM FALLBACK" in msg:
+                oom_message[0] = msg
+                oom_event.set()
+    _oom_handler = _OomHandler()
+    _replay_logger.addHandler(_oom_handler)
+
     try:
         solution, tps, scramble, movetimes = parse_replay_url(replay_url)
 
@@ -214,12 +229,16 @@ async def generate_replay_video(msg, replay_url, output_path="replay.mp4", **kwa
 
         poll_task = asyncio.create_task(poll_display())
         try:
+            def cancel_check():
+                return oom_event.is_set()
+
             video_path = await asyncio.to_thread(
                 video_gen.generate_simple_replay,
                 solution, output_path=output,
                 tps=tps, scramble=scramble, movetimes=movetimes,
                 show_progress=False,
                 external_progress_cb=progress_cb,
+                cancel_check=cancel_check,
                 **kwargs
             )
             poll_task.cancel()
@@ -231,7 +250,10 @@ async def generate_replay_video(msg, replay_url, output_path="replay.mp4", **kwa
             return discord.File(video_path), tmpdir
         except CancelError:
             poll_task.cancel()
-            await msg.edit(content="❌ Video generation cancelled.")
+            if oom_event.is_set():
+                await msg.edit(content=f"❌ {oom_message[0]}")
+            else:
+                await msg.edit(content="❌ Video generation cancelled.")
             shutil.rmtree(tmpdir, ignore_errors=True)
             raise
         except Exception as e:
@@ -240,6 +262,7 @@ async def generate_replay_video(msg, replay_url, output_path="replay.mp4", **kwa
             shutil.rmtree(tmpdir, ignore_errors=True)
             raise
     finally:
+        _replay_logger.removeHandler(_oom_handler)
         video_generation_running = False
 
 class MyClient(discord.Client):
