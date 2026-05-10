@@ -2217,8 +2217,13 @@ async def admin_getpb_exe(
         **Date:** {timestamp}{filters_applied}
         """
 
-        if splits_data != "Invalid splits data":
-            embed_description += f"```\n{splits_data}\n```"
+        splits_file = None
+        if splits_data not in ("Invalid splits data", "splits are failed"):
+            splits_block = f"```\n{splits_data}\n```"
+            if len(embed_description) + len(splits_block) + len(extra_note or "") <= 4000:
+                embed_description += splits_block
+            else:
+                splits_file = discord.File(io.BytesIO(splits_data.encode('utf-8')), filename="splits.txt")
         
         if extra_note:
             embed_description += extra_note
@@ -2247,18 +2252,19 @@ async def admin_getpb_exe(
                 await msg.edit(content=f"❌ Video generation failed: {e}")
                 video_file = None
 
+        files = [f for f in [splits_file, video_file] if f is not None]
+        send_kw = dict(embed=embed, ephemeral=False)
         if use_button:
             view = discord.ui.View()
             view.add_item(discord.ui.Button(label="View on SlidySim", url=final_link, style=discord.ButtonStyle.link))
-            if video_file:
-                await interaction.followup.send(embed=embed, view=view, file=video_file, ephemeral=False)
-            else:
-                await interaction.followup.send(embed=embed, view=view, ephemeral=False)
+            send_kw['view'] = view
         else:
-            if video_file:
-                await interaction.followup.send(content=f"# [View on SlidySim]({final_link})", embed=embed, file=video_file, ephemeral=False)
-            else:
-                await interaction.followup.send(content=f"# [View on SlidySim]({final_link})", embed=embed, ephemeral=False)
+            send_kw['content'] = f"# [View on SlidySim]({final_link})"
+
+        if files:
+            await interaction.followup.send(**send_kw, files=files)
+        else:
+            await interaction.followup.send(**send_kw)
 
         if video_tmpdir:
             import shutil
@@ -2563,12 +2569,14 @@ async def makereplay(
         url_length = len(replay_url)
         link_md = f"[Replay]({replay_url})"
 
-        async def _try_send(content=None, file=None):
+        async def _try_send(content=None, file=None, files=None):
             kw = {}
             if content is not None:
                 kw['content'] = content
             if file is not None:
                 kw['file'] = file
+            if files is not None:
+                kw['files'] = files
             try:
                 return await interaction.followup.send(**kw)
             except Exception as e:
@@ -2584,18 +2592,21 @@ async def makereplay(
                 await _try_send(content=content, file=video_file)
             else:
                 f = discord.File(io.BytesIO(content.encode('utf-8')), filename="replay_result.txt")
-                await _try_send(content="Result too large for message — see attached file.", file=f)
                 if video_file:
-                    await _try_send(file=video_file)
+                    await _try_send(content="Result too large — see attached file.", files=[f, video_file])
+                else:
+                    await _try_send(content="Result too large — see attached file.", file=f)
         else:
             file_content_str = f"Replay URL (too long for direct link):\n{replay_url}"
             f = discord.File(io.BytesIO(file_content_str.encode('utf-8')), filename="replay_url.txt")
-            if splits_data and splits_data not in ("Invalid splits data", "splits are failed"):
-                await _try_send(content=f"```\n{splits_data}\n```", file=f)
-            else:
-                await _try_send(content="Replay URL too long for a direct link — see attached file.", file=f)
             if video_file:
-                await _try_send(file=video_file)
+                extra = [video_file]
+            else:
+                extra = []
+            if splits_data and splits_data not in ("Invalid splits data", "splits are failed"):
+                await _try_send(content=f"```\n{splits_data}\n```", files=[f, *extra])
+            else:
+                await _try_send(content="Replay URL too long — see attached file.", files=[f, *extra])
 
         if video_tmpdir:
             import shutil
@@ -2679,9 +2690,23 @@ async def admin_replay(
     except Exception:
         splits_data = "splits are failed"
 
+    splits_file = None
+    if splits_data not in ("Invalid splits data", "splits are failed"):
+        desc_parts = []
+        splits_block = f"```\n{splits_data}\n```"
+        if len(splits_block) <= 3900:
+            desc_parts.append(splits_block)
+        else:
+            splits_file = discord.File(io.BytesIO(splits_data.encode('utf-8')), filename="splits.txt")
+            desc_parts.append("*Splits too large — see attached file.*")
+        desc_parts.append("*Replay may take a minute to activate.*")
+        embed_description = "\n".join(desc_parts)
+    else:
+        embed_description = "*Replay may take a minute to activate.*"
+
     embed = discord.Embed(
         title=f"🌟 {metadata or 'Replay Link'} 🌟",
-        description=f"```\n{splits_data}\n```*Replay may take a minute to activate.*" if splits_data != "Invalid splits data" else "*Replay may take a minute to activate.*",
+        description=embed_description,
         color=discord.Color.blurple()
     )
     embed.set_footer(text="Click the button below to view.")
@@ -2704,8 +2729,9 @@ async def admin_replay(
         except Exception as e:
             await msg.edit(content=f"❌ Video generation failed: {e}")
 
-    if video_file:
-        await interaction.followup.send(embed=embed, view=view, file=video_file, ephemeral=False)
+    files = [f for f in [splits_file, video_file] if f is not None]
+    if files:
+        await interaction.followup.send(embed=embed, view=view, files=files, ephemeral=False)
     else:
         await interaction.followup.send(embed=embed, view=view, ephemeral=False)
 
