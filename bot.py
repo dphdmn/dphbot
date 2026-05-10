@@ -78,7 +78,7 @@ def compress_array_to_string(input_array):
     base64_encoded_string = base64.b64encode(compressed_data).decode()
     return encodeURIComponent(base64_encoded_string)
 
-async def generate_replay_video(msg, replay_url, output_path="replay.mp4", **kwargs):
+async def generate_replay_video(msg, replay_url, output_path="replay.mp4", solution=None, tps=None, scramble=None, movetimes=None, **kwargs):
     import subprocess, shutil
     import logging, threading
     from replay_video import pick_tile_size as _pick_tile_size
@@ -103,7 +103,8 @@ async def generate_replay_video(msg, replay_url, output_path="replay.mp4", **kwa
     _replay_logger.addHandler(_oom_handler)
 
     try:
-        solution, tps, scramble, movetimes = parse_replay_url(replay_url)
+        if solution is None:
+            solution, tps, scramble, movetimes = parse_replay_url(replay_url)
 
         sol_len = len(expand_solution(solution))
 
@@ -2588,6 +2589,7 @@ async def makereplay(
             try:
                 video_file, video_tmpdir = await generate_replay_video(
                     msg, replay_url,
+                    solution=solution, tps=tps, scramble=scramble, movetimes=movetimes,
                     quality=quality,
                     compression=compression,
                     fps=fps,
