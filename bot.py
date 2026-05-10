@@ -255,12 +255,12 @@ async def generate_replay_video(msg, replay_url, output_path="replay.mp4", **kwa
             else:
                 await msg.edit(content="❌ Video generation cancelled.")
             shutil.rmtree(tmpdir, ignore_errors=True)
-            raise
+            return None, None
         except Exception as e:
             poll_task.cancel()
             await msg.edit(content=f"❌ Video generation failed: {e}")
             shutil.rmtree(tmpdir, ignore_errors=True)
-            raise
+            return None, None
     finally:
         _replay_logger.removeHandler(_oom_handler)
         video_generation_running = False
