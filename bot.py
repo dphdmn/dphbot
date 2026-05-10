@@ -128,7 +128,7 @@ async def generate_replay_video(msg, replay_url, output_path="replay.mp4", **kwa
         quality = kwargs.get("quality", 1)
         total_frames = sol_len + 1
         tile_size = _pick_tile_size(w, h) if isinstance(w, int) else "?"
-        tps_display = tps if tps else kwargs.get("tps", "auto")
+        tps_display = tps/1000 if tps else kwargs.get("tps", "auto")/1000
 
         tmpdir = tempfile.mkdtemp(prefix="replay_vid_")
         output = os.path.join(tmpdir, output_path)
