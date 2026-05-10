@@ -105,7 +105,7 @@ async def generate_replay_video(msg, replay_url, output_path="replay.mp4", solut
     try:
         if solution is None:
             solution, tps, scramble, movetimes = parse_replay_url(replay_url)
-
+            tps = tps/1000
         sol_len = len(expand_solution(solution))
 
         # Safety checks
@@ -116,7 +116,7 @@ async def generate_replay_video(msg, replay_url, output_path="replay.mp4", solut
 
         check_tps = tps if tps is not None else (15000 if movetimes in (None, -1) else None)
         if check_tps is not None:
-            estimated_ms = sol_len / (check_tps / 1000) * 1000
+            estimated_ms = sol_len / check_tps * 1000
             if estimated_ms > 300000:
                 raise ValueError(f"Estimated video length ({estimated_ms:.0f}ms) exceeds the 300000ms limit.")
 
