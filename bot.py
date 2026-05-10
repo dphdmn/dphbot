@@ -1,5 +1,6 @@
 from dotenv import load_dotenv
 import os
+import sys
 import discord
 import io
 from discord import app_commands, ui
@@ -11,8 +12,6 @@ from urllib.parse import quote
 from datetime import date, datetime, timedelta
 import time as timemodule
 from splits import splits_formatted as getsplits
-from replay_generator import ReplayGenerator, expand_solution
-from replay_video import ReplayVideoGenerator, parse_replay_url
 from marathon import getMarathons
 from typing import Literal
 import subprocess
@@ -21,6 +20,17 @@ import tempfile
 import stats
 from power_data import DISPLAY_TYPE_MAP, CONTROL_TYPE_MAP, PB_TYPE_MAP, SOLVE_TYPE_MAP
 import re
+
+# ── Replay generator setup ──────────────────────────────────────
+REPLAY_GEN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "replay_generator")
+if REPLAY_GEN_DIR not in sys.path:
+    sys.path.insert(0, REPLAY_GEN_DIR)
+
+from replay_init import init_replay_generator as update_replay_repo
+update_replay_repo(force_update=True)
+
+from replay_generator import ReplayGenerator, expand_solution
+from replay_video import ReplayVideoGenerator, parse_replay_url, CancelError
 
 load_dotenv()
 
@@ -91,7 +101,7 @@ async def generate_replay_video(msg, replay_url, output_path="replay.mp4", **kwa
     progress = {"cur": 0, "tot": 0}
     start_time = timemodule.time()
 
-    def progress_cb(cur, tot):
+    def progress_cb(cur, tot, **kwargs):
         progress["cur"] = cur
         progress["tot"] = tot
 
@@ -1941,7 +1951,30 @@ async def admin_coolsolves_exe(
     time_limit="Optional maximum time in seconds",
     moves_limit="Optional maximum moves",
     hours_limit="Optional time window in hours (e.g., 24 for last day)",
-    create_video="Also generate an MP4 replay video (may take a moment)"
+    create_video="Also generate an MP4 replay video (may take a moment)",
+    quality="Render quality: 1.0 (fast) to 4.0 (ultra)",
+    compression="Video quality: 10–40, lower = better quality (default: 18)",
+    fps="Output framerate (default: 60)",
+    force_fringe="Force fringe color pattern"
+)
+@app_commands.choices(
+    quality=[
+        app_commands.Choice(name="1.0 — Fast (default)", value=1.0),
+        app_commands.Choice(name="2.0 — Balanced", value=2.0),
+        app_commands.Choice(name="3.0 — High", value=3.0),
+        app_commands.Choice(name="4.0 — Ultra", value=4.0),
+    ],
+    compression=[
+        app_commands.Choice(name="12 — High quality", value=12),
+        app_commands.Choice(name="18 — Balanced (default)", value=18),
+        app_commands.Choice(name="24 — Smaller file", value=24),
+        app_commands.Choice(name="30 — Very small", value=30),
+    ],
+    fps=[
+        app_commands.Choice(name="30 FPS", value=30),
+        app_commands.Choice(name="60 FPS (default)", value=60),
+        app_commands.Choice(name="120 FPS", value=120),
+    ]
 )
 async def admin_getpb_exe(
     interaction: discord.Interaction,
@@ -1950,7 +1983,11 @@ async def admin_getpb_exe(
     time_limit: float = None,
     moves_limit: int = None,
     hours_limit: int = None,
-    create_video: bool = False
+    create_video: bool = False,
+    quality: float = 1.0,
+    compression: int = 18,
+    fps: int = 60,
+    force_fringe: bool = False
 ):
     await interaction.response.defer(ephemeral=False)
     
@@ -2130,7 +2167,11 @@ async def admin_getpb_exe(
             msg = await interaction.followup.send("🎥 Generating replay video...", ephemeral=False)
             try:
                 video_file, video_tmpdir = await generate_replay_video(
-                    msg, slidy_url
+                    msg, slidy_url,
+                    quality=quality,
+                    compression=compression,
+                    fps=fps,
+                    force_fringe=force_fringe
                 )
             except Exception as e:
                 await msg.edit(content=f"❌ Video generation failed: {e}")
@@ -2304,7 +2345,30 @@ async def splits(
     tps="Optional TPS value (do not use with time)",
     time="Optional solve time in seconds (e.g., 0.909) — do not use with tps",
     movetimes="Optional comma-separated move times in ms (e.g., 0,16,50,90326947,...)",
-    create_video="Also generate an MP4 replay video (only for solutions < 2000 moves)"
+    create_video="Also generate an MP4 replay video (only for solutions < 2000 moves)",
+    quality="Render quality: 1.0 (fast) to 4.0 (ultra) — higher uses more VRAM (default: 1.0)",
+    compression="Video quality: 10–40, lower = better quality but larger file (default: 18)",
+    fps="Output framerate (default: 60)",
+    force_fringe="Force fringe color pattern instead of auto-detecting grids"
+)
+@app_commands.choices(
+    quality=[
+        app_commands.Choice(name="1.0 — Fast (default)", value=1.0),
+        app_commands.Choice(name="2.0 — Balanced", value=2.0),
+        app_commands.Choice(name="3.0 — High", value=3.0),
+        app_commands.Choice(name="4.0 — Ultra", value=4.0),
+    ],
+    compression=[
+        app_commands.Choice(name="12 — High quality", value=12),
+        app_commands.Choice(name="18 — Balanced (default)", value=18),
+        app_commands.Choice(name="24 — Smaller file", value=24),
+        app_commands.Choice(name="30 — Very small", value=30),
+    ],
+    fps=[
+        app_commands.Choice(name="30 FPS", value=30),
+        app_commands.Choice(name="60 FPS (default)", value=60),
+        app_commands.Choice(name="120 FPS", value=120),
+    ]
 )
 async def makereplay(
     interaction: discord.Interaction,
@@ -2315,7 +2379,11 @@ async def makereplay(
     tps: float = None,
     time: float = None,
     movetimes: str = None,
-    create_video: bool = False
+    create_video: bool = False,
+    quality: float = 1.0,
+    compression: int = 18,
+    fps: int = 60,
+    force_fringe: bool = False
 ):
     await interaction.response.defer(ephemeral=False)
 
@@ -2419,7 +2487,11 @@ async def makereplay(
                 msg = await interaction.followup.send("🎥 Generating replay video...", ephemeral=False)
                 try:
                     video_file, video_tmpdir = await generate_replay_video(
-                        msg, replay_url
+                        msg, replay_url,
+                        quality=quality,
+                        compression=compression,
+                        fps=fps,
+                        force_fringe=force_fringe
                     )
                 except Exception as e:
                     await msg.edit(content=f"❌ Video generation failed: {e}")
@@ -2474,14 +2546,41 @@ async def makereplay(
     file="Optional .txt file containing the replay URL",
     url="Optional replay URL directly (alternative to file)",
     metadata="Optional metadata text for the embed title",
-    create_video="Also generate an MP4 replay video (may take a moment)"
+    create_video="Also generate an MP4 replay video (may take a moment)",
+    quality="Render quality: 1.0 (fast) to 4.0 (ultra)",
+    compression="Video quality: 10–40, lower = better quality (default: 18)",
+    fps="Output framerate (default: 60)",
+    force_fringe="Force fringe color pattern"
+)
+@app_commands.choices(
+    quality=[
+        app_commands.Choice(name="1.0 — Fast (default)", value=1.0),
+        app_commands.Choice(name="2.0 — Balanced", value=2.0),
+        app_commands.Choice(name="3.0 — High", value=3.0),
+        app_commands.Choice(name="4.0 — Ultra", value=4.0),
+    ],
+    compression=[
+        app_commands.Choice(name="12 — High quality", value=12),
+        app_commands.Choice(name="18 — Balanced (default)", value=18),
+        app_commands.Choice(name="24 — Smaller file", value=24),
+        app_commands.Choice(name="30 — Very small", value=30),
+    ],
+    fps=[
+        app_commands.Choice(name="30 FPS", value=30),
+        app_commands.Choice(name="60 FPS (default)", value=60),
+        app_commands.Choice(name="120 FPS", value=120),
+    ]
 )
 async def admin_replay(
     interaction: discord.Interaction,
     file: discord.Attachment = None,
     url: str = None,
     metadata: str = None,
-    create_video: bool = False
+    create_video: bool = False,
+    quality: float = 1.0,
+    compression: int = 18,
+    fps: int = 60,
+    force_fringe: bool = False
 ):
     ALLOWED_USER_IDS = [YOUR_USER_ID]
 
@@ -2538,7 +2637,11 @@ async def admin_replay(
         msg = await interaction.followup.send("🎥 Generating replay video...", ephemeral=False)
         try:
             video_file, video_tmpdir = await generate_replay_video(
-                msg, file_content
+                msg, file_content,
+                quality=quality,
+                compression=compression,
+                fps=fps,
+                force_fringe=force_fringe
             )
         except Exception as e:
             await msg.edit(content=f"❌ Video generation failed: {e}")

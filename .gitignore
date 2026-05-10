@@ -11,3 +11,4 @@ replay_gui/
 replay_gui/dist/
 replay_gui/build/
 *.spec
+replay_genereator/*
