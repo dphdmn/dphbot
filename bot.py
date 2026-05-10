@@ -78,6 +78,14 @@ def compress_array_to_string(input_array):
     base64_encoded_string = base64.b64encode(compressed_data).decode()
     return encodeURIComponent(base64_encoded_string)
 
+def _get_splits(data: str) -> str:
+    if "?r=" in data:
+        return getsplits(data)
+    try:
+        return getsplits(ReplayGenerator().generate_simple_replay(data))
+    except Exception:
+        return "splits are failed"
+
 async def generate_replay_video(msg, replay_url, output_path="replay.mp4", solution=None, tps=None, scramble=None, movetimes=None, **kwargs):
     import subprocess, shutil
     import logging, threading
@@ -2425,7 +2433,7 @@ async def splits(
             return
 
         try:
-            splits_data = getsplits(file_content)
+            splits_data = _get_splits(file_content)
         except Exception:
             splits_data = "splits are failed"
 
@@ -2581,7 +2589,7 @@ async def makereplay(
                 return
 
         try:
-            splits_data = getsplits(replay_url)
+            splits_data = _get_splits(replay_url)
         except Exception as e:
             await interaction.followup.send(f"DEBUG getsplits fail: {type(e).__name__}: {e}", ephemeral=True)
             splits_data = "splits are failed"
@@ -2738,7 +2746,7 @@ async def admin_replay(
         return
 
     try:
-        splits_data = getsplits(file_content)
+        splits_data = _get_splits(file_content)
     except Exception:
         splits_data = "splits are failed"
 
