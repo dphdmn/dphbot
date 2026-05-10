@@ -2528,11 +2528,16 @@ async def makereplay(
         if is_url_input:
             url_solution, url_tps, url_scramble, url_movetimes = parse_replay_url(replay_url)
             solution = url_solution
+            user_has_speed = tps is not None or time is not None
             if tps is None:
-                tps = url_tps
+                if time is not None:
+                    tps = len(expand_solution(solution)) / time
+                    time = None
+                else:
+                    tps = url_tps
             if scramble is None:
                 scramble = url_scramble
-            if isinstance(url_movetimes, list) and movetimes is None:
+            if movetimes is None and isinstance(url_movetimes, list) and not user_has_speed:
                 movetimes = url_movetimes
         else:
             parsed_size = None
@@ -2580,6 +2585,11 @@ async def makereplay(
         except Exception as e:
             await interaction.followup.send(f"DEBUG getsplits fail: {type(e).__name__}: {e}", ephemeral=True)
             splits_data = "splits are failed"
+
+        # Convert time → tps: use only tps internally
+        if time is not None:
+            tps = len(expand_solution(solution)) / time
+            time = None
 
         # Video generation
         video_file = None
