@@ -2421,7 +2421,7 @@ async def splits(
     tps="Optional TPS value (do not use with time)",
     time="Optional solve time in seconds (e.g., 0.909) — do not use with tps",
     movetimes="Optional comma-separated move times in ms (e.g., 0,16,50,90326947,...)",
-    create_video="Also generate an MP4 replay video (only for solutions < 2000 moves)",
+    create_video="Also generate an MP4 replay video (only for solutions < 4000 moves)",
     quality="Render quality: 1 (High, default) or 2 (Ultra)",
     compression="Video compression CRF 10–40, lower = better quality but larger file (default: 18)",
     fps="Output framerate 1–240 (default: 60)",
@@ -2553,7 +2553,7 @@ async def makereplay(
         video_tmpdir = None
         if create_video:
             sol_expanded = expand_solution(solution)
-            if len(sol_expanded) < 2000:
+            if len(sol_expanded) < 4000:
                 msg = await interaction.followup.send("🎥 Generating replay video...", ephemeral=False)
                 try:
                     video_file, video_tmpdir = await generate_replay_video(
@@ -2584,29 +2584,39 @@ async def makereplay(
                 return None
 
         if url_length <= 1950:
-            if splits_data and splits_data not in ("Invalid splits data", "splits are failed"):
-                content = f"```\n{splits_data}\n```\n{link_md}"
+            have_splits = splits_data and splits_data not in ("Invalid splits data", "splits are failed")
+            if have_splits:
+                splits_block = f"```\n{splits_data}\n```"
+                combined = f"{splits_block}\n{link_md}"
             else:
-                content = link_md
-            if len(content) <= 2000:
-                await _try_send(content=content, file=video_file)
-            else:
-                f = discord.File(io.BytesIO(content.encode('utf-8')), filename="replay_result.txt")
+                combined = link_md
+            if len(combined) <= 2000:
+                await _try_send(content=combined, file=video_file)
+            elif have_splits:
+                # Show replay link inline, put splits in attached file
+                splits_file = discord.File(io.BytesIO(splits_data.encode('utf-8')), filename="splits.txt")
                 if video_file:
-                    await _try_send(content="Result too large — see attached file.", files=[f, video_file])
+                    await _try_send(content=link_md, files=[splits_file, video_file])
                 else:
-                    await _try_send(content="Result too large — see attached file.", file=f)
+                    await _try_send(content=link_md, file=splits_file)
+            else:
+                await _try_send(content=link_md, file=video_file)
         else:
             file_content_str = f"Replay URL (too long for direct link):\n{replay_url}"
-            f = discord.File(io.BytesIO(file_content_str.encode('utf-8')), filename="replay_url.txt")
-            if video_file:
-                extra = [video_file]
+            url_file = discord.File(io.BytesIO(file_content_str.encode('utf-8')), filename="replay_url.txt")
+            have_splits = splits_data and splits_data not in ("Invalid splits data", "splits are failed")
+            if have_splits:
+                splits_block = f"```\n{splits_data}\n```"
+                if len(splits_block) <= 2000:
+                    extra = [url_file, video_file] if video_file else [url_file]
+                    await _try_send(content=splits_block, files=extra)
+                else:
+                    splits_file = discord.File(io.BytesIO(splits_data.encode('utf-8')), filename="splits.txt")
+                    extra = [url_file, splits_file, video_file] if video_file else [url_file, splits_file]
+                    await _try_send(content="Replay URL and splits — see attached files.", files=extra)
             else:
-                extra = []
-            if splits_data and splits_data not in ("Invalid splits data", "splits are failed"):
-                await _try_send(content=f"```\n{splits_data}\n```", files=[f, *extra])
-            else:
-                await _try_send(content="Replay URL too long — see attached file.", files=[f, *extra])
+                extra = [url_file, video_file] if video_file else [url_file]
+                await _try_send(content="Replay URL — see attached file.", files=extra)
 
         if video_tmpdir:
             import shutil
