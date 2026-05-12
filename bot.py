@@ -2543,6 +2543,14 @@ async def makereplay(
                 scramble = url_scramble
             if movetimes is None and isinstance(url_movetimes, list) and not user_has_speed:
                 movetimes = url_movetimes
+            if user_has_speed:
+                gen = ReplayGenerator()
+                kwargs = {}
+                if scramble:
+                    kwargs['scramble'] = scramble
+                if tps is not None:
+                    kwargs['tps'] = tps
+                replay_url = gen.generate_simple_replay(solution, **kwargs)
         else:
             parsed_size = None
             if size:
@@ -2589,11 +2597,6 @@ async def makereplay(
         except Exception as e:
             await interaction.followup.send(f"DEBUG getsplits fail: {type(e).__name__}: {e}", ephemeral=True)
             splits_data = "splits are failed"
-
-        # Convert time → tps: use only tps internally
-        if time is not None:
-            tps = len(expand_solution(solution)) / time
-            time = None
 
         # Video generation
         video_file = None
