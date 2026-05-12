@@ -3,7 +3,7 @@ import sys
 import subprocess
 import shutil
 
-REPO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "replay_generator")
+REPO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "slidyreplay")
 REPO_URL = "https://github.com/dphdmn/slidyreplay.git"
 
 

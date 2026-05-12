@@ -12,3 +12,4 @@ replay_gui/dist/
 replay_gui/build/
 *.spec
 replay_genereator/*
+replay_genereator

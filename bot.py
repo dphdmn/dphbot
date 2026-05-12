@@ -17,20 +17,21 @@ from typing import Literal
 import subprocess
 import asyncio
 import tempfile
+import shutil
 import stats
 from power_data import DISPLAY_TYPE_MAP, CONTROL_TYPE_MAP, PB_TYPE_MAP, SOLVE_TYPE_MAP
 import re
 
 # ── Replay generator setup ──────────────────────────────────────
-REPLAY_GEN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "replay_generator")
-if REPLAY_GEN_DIR not in sys.path:
-    sys.path.insert(0, REPLAY_GEN_DIR)
+SLIDYREPLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "slidyreplay")
+if SLIDYREPLAY_DIR not in sys.path:
+    sys.path.insert(0, SLIDYREPLAY_DIR)
 
 from replay_init import init_replay_generator as update_replay_repo
 update_replay_repo(force_update=True)
 
-from replay_generator import ReplayGenerator, expand_solution
-from replay_video import ReplayVideoGenerator, parse_replay_url, CancelError
+from replay_generator import ReplayGenerator, expand_solution, parse_scramble_guess
+from replay_video import parse_replay_url
 
 load_dotenv()
 
@@ -86,192 +87,159 @@ def _get_splits(data: str) -> str:
     except Exception:
         return "splits are failed"
 
-async def generate_replay_video(msg, replay_url, output_path="replay.mp4", solution=None, tps=None, scramble=None, movetimes=None, **kwargs):
-    import subprocess, shutil
-    import logging, threading
-    from replay_video import pick_tile_size as _pick_tile_size
-    from replay_generator import expand_solution, parse_scramble_guess
-
+async def generate_replay_video(msg, replay_url, output_path="replay.mp4", **kwargs):
     global video_generation_running
     if video_generation_running:
         raise RuntimeError("Another video is already being generated. Please wait.")
     video_generation_running = True
 
-    # Watch GPU OOM log messages to abort generation immediately
-    oom_event = threading.Event()
-    oom_message = [None]
-    _replay_logger = logging.getLogger("replay_debug")
-    class _OomHandler(logging.Handler):
-        def emit(self, record):
-            msg = record.getMessage()
-            if "GPU OOM FALLBACK" in msg:
-                oom_message[0] = msg
-                oom_event.set()
-    _oom_handler = _OomHandler()
-    _replay_logger.addHandler(_oom_handler)
+    tmpdir = tempfile.mkdtemp(prefix="replay_vid_")
+    output = os.path.join(tmpdir, output_path)
+    start_time = timemodule.time()
 
     try:
-        if solution is None:
-            solution, tps, scramble, movetimes = parse_replay_url(replay_url)
-            tps = tps/1000
-        sol_len = len(expand_solution(solution))
+        url_file = os.path.join(tmpdir, "replay_url.txt")
+        with open(url_file, "w", encoding="utf-8") as f:
+            f.write(replay_url)
 
-        # Safety checks
-        if movetimes not in (None, -1):
-            last_mt = movetimes[-1] if isinstance(movetimes, list) else movetimes
-            if last_mt > 300000:
-                raise ValueError(f"Video would be {last_mt}ms long, exceeding the 30000ms limit.")
-
-        check_tps = tps if tps is not None else (15000 if movetimes in (None, -1) else None)
-        if check_tps is not None:
-            estimated_ms = sol_len / check_tps * 1000
-            if estimated_ms > 300000:
-                raise ValueError(f"Estimated video length ({estimated_ms:.0f}ms) exceeds the 300000ms limit.")
-
-        # Puzzle info for header
+        # Build immediate header from URL parse
         try:
-            _m = parse_scramble_guess(solution)
+            sol, tps_raw, _, _ = parse_replay_url(replay_url)
+            sol_len = len(expand_solution(sol))
+            _m = parse_scramble_guess(sol)
             w, h = len(_m[0]), len(_m)
+            tps_display = f"{tps_raw:.3f}" if tps_raw else "auto"
+            header_text = f"Puzzle: {w}x{h}, Moves: {sol_len}, TPS: {tps_display}\n"
         except Exception:
-            w = h = "?"
-        quality = kwargs.get("quality", 1)
-        total_frames = sol_len + 1
-        tile_size = _pick_tile_size(w, h) if isinstance(w, int) else "?"
-        tps_display = tps if tps else kwargs.get("tps", "auto")
+            header_text = ""
 
-        tmpdir = tempfile.mkdtemp(prefix="replay_vid_")
-        output = os.path.join(tmpdir, output_path)
-        start_time = timemodule.time()
+        main_py = os.path.join(SLIDYREPLAY_DIR, "main.py")
+        cmd = [sys.executable, main_py, "--file", url_file, "--output", output,
+               "--quality", str(kwargs.get("quality", 1)),
+               "--fps", str(kwargs.get("fps", 60)),
+               "--compression", str(kwargs.get("compression", 18))]
 
-        # ── DiscordProgress — mirrors TerminalProgress from replay_video.py ──
-        class DiscordProgress:
-            def __init__(self):
-                self.start_time = timemodule.time()
-                self.last_update_time = self.start_time
-                self.last_current = 0
-                self.window_rate = 0.0
-                self._last_edit_time = 0.0
-                self._gpu_stats = None
-                self._phase_offset = 0
-                self._phase0_total = None
-                self._phase_prev_cur = None
-                self.total = 0
-                self.last_line = ""
+        speed = kwargs.get("speed", 1.0)
+        if speed != 1.0:
+            cmd.extend(["--speedup", str(speed)])
+        if kwargs.get("force_fringe"):
+            cmd.append("--force-fringe")
+        if kwargs.get("no_border"):
+            cmd.append("--no-border")
+        if kwargs.get("hide_numbers"):
+            cmd.append("--no-numbers")
+        if kwargs.get("no_layout"):
+            cmd.append("--no-layout")
+        if kwargs.get("no_secondary_border"):
+            cmd.append("--no-secondary-border")
 
-            @staticmethod
-            def _time_str(t):
-                if t >= 3600:
-                    return f"{t/3600:.0f}h{(t%3600)/60:.0f}m"
-                elif t >= 60:
-                    return f"{t/60:.0f}m{t%60:.0f}s"
-                return f"{t:.1f}s"
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
 
-            def _build_line(self, current, elapsed, rate, eta):
-                frac = current / self.total if self.total > 0 else 0
-                pct = frac * 100
-                total_t = elapsed + eta
-                suffix = f" {pct:.0f}% | {rate:.0f}/s | {self._time_str(elapsed)}/{self._time_str(total_t)}"
-                if self._gpu_stats and self._gpu_stats.get("batch_size"):
-                    s = self._gpu_stats
-                    mb = s.get("mem_used_mb", 0) / 1024
-                    tb = s.get("total_mem_mb", 0) / 1024
-                    suffix += f" | {mb:.1f}/{tb:.1f}GB | Batch: {s.get('batch_size', 0)}"
-                bar_w = 40
-                filled = int(bar_w * frac)
-                bar = "#" * filled + "-" * (bar_w - filled)
-                return f"Render: [{bar}]{suffix}"
+        process = await asyncio.create_subprocess_exec(
+            *cmd, env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
 
-            def __call__(self, cur, tot, **kwargs):
-                if (self._phase_prev_cur is not None and
-                    cur < self._phase_prev_cur and
-                    self._phase0_total is not None):
-                    self._phase_offset += self._phase0_total
-                self._phase_prev_cur = cur
-                if self._phase0_total is None:
-                    self._phase0_total = tot
-                adjusted_cur = cur + self._phase_offset
-                adjusted_tot = self._phase0_total * 2
-                self.total = adjusted_tot
-                gpu_stats = kwargs.get("gpu_stats")
-                if gpu_stats is not None:
-                    self._gpu_stats = gpu_stats
+        progress_text = ""
+        oom_detected = False
+        done_line = ""
 
-                now = timemodule.time()
-                elapsed = now - self.start_time
-                window = now - self.last_update_time
-                if window > 0.5 and adjusted_cur > self.last_current:
-                    instant = (adjusted_cur - self.last_current) / window
-                    if self.window_rate <= 0:
-                        self.window_rate = instant
-                    else:
-                        self.window_rate = self.window_rate * 0.5 + instant * 0.5
-                    self.last_update_time = now
-                    self.last_current = adjusted_cur
-                rate = self.window_rate if self.window_rate > 0 else adjusted_cur / elapsed if elapsed > 0 else 0
-                eta = (self.total - adjusted_cur) / rate if rate > 0 else 0
-                self.last_line = self._build_line(adjusted_cur, elapsed, rate, eta)
+        async def read_stdout():
+            nonlocal header_text, progress_text, done_line
+            while True:
+                line_bytes = await process.stdout.readline()
+                if not line_bytes:
+                    break
+                line = line_bytes.decode("utf-8", errors="replace").rstrip()
+                if line.startswith(("Puzzle:", "Tile size:")):
+                    pass  # already in header
+                elif line.startswith("Output:"):
+                    header_text += f"Output: {output_path}\n"
+                elif line.startswith("[ReplayVideoGenerator"):
+                    gpu_info = line.split("]", 1)[-1].strip()
+                    if gpu_info:
+                        header_text += f"GPU: {gpu_info}\n"
+                elif "Render:" in line:
+                    progress_text = line
+                elif "Done!" in line:
+                    done_line = line
 
-        dp = DiscordProgress()
-        dp.total = total_frames * 2
-
-        # Initial header
-        header = f"Puzzle: {w}x{h}, Moves: {sol_len}, TPS: {tps_display}"
-        tile = f"Tile size: {tile_size}px x quality={quality}, Frames: {total_frames}"
-        header_block = f"{header}\n{tile}"
-        bar = dp._build_line(0, 0, 0, 0)
-        await msg.edit(content=f"{header_block}\n{bar}")
-
-        def progress_cb(cur, tot, **kw):
-            dp(cur, tot, **kw)
-
-        video_gen = ReplayVideoGenerator(temp_dir=tmpdir, cleanup_frames=False)
+        async def read_stderr():
+            nonlocal oom_detected
+            while True:
+                line_bytes = await process.stderr.readline()
+                if not line_bytes:
+                    break
+                line = line_bytes.decode("utf-8", errors="replace").rstrip()
+                if "GPU OOM FALLBACK" in line:
+                    oom_detected = True
 
         async def poll_display():
+            last_content = ""
             while True:
                 await asyncio.sleep(3)
-                line = dp.last_line
-                if line:
+                if progress_text:
+                    content = f"🎥 Generating replay video...\n{header_text}{progress_text}"
+                else:
+                    content = f"🎥 Generating replay video...\n{header_text.strip()}"
+                if content and content != last_content:
                     try:
-                        await msg.edit(content=f"{header_block}\n{line}")
+                        await msg.edit(content=content)
                     except Exception:
                         pass
+                    last_content = content
 
+        stdout_task = asyncio.create_task(read_stdout())
+        stderr_task = asyncio.create_task(read_stderr())
+        # Immediate first display so puzzle info shows right away
+        await msg.edit(content=f"🎥 Generating replay video...\n{header_text.strip()}")
         poll_task = asyncio.create_task(poll_display())
-        try:
-            def cancel_check():
-                return oom_event.is_set()
 
-            video_path = await asyncio.to_thread(
-                video_gen.generate_simple_replay,
-                solution, output_path=output,
-                tps=tps, scramble=scramble, movetimes=movetimes,
-                show_progress=False,
-                external_progress_cb=progress_cb,
-                cancel_check=cancel_check,
-                **kwargs
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(stdout_task, stderr_task, process.wait()),
+                timeout=60
             )
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
             poll_task.cancel()
-            if not os.path.exists(video_path):
-                raise FileNotFoundError(f"Output file not found after generation: {video_path}")
-            elapsed = timemodule.time() - start_time
-            fn = os.path.basename(video_path)
-            await msg.edit(content=f"✅ Done! Video saved to: {fn} (took {elapsed:.1f}s)")
-            return discord.File(video_path), tmpdir
-        except CancelError:
-            poll_task.cancel()
-            if oom_event.is_set():
-                await msg.edit(content=f"❌ {oom_message[0]}")
-            else:
-                await msg.edit(content="❌ Video generation cancelled.")
+            await msg.edit(content="❌ Video generation timed out after 60 seconds.")
             shutil.rmtree(tmpdir, ignore_errors=True)
             return None, None
-        except Exception as e:
-            poll_task.cancel()
-            await msg.edit(content=f"❌ Video generation failed: {e}")
+
+        poll_task.cancel()
+
+        if oom_detected:
+            await msg.edit(content="❌ GPU OOM FALLBACK: Video generation failed due to GPU out of memory. Try lowering quality or disabling GPU.")
             shutil.rmtree(tmpdir, ignore_errors=True)
             return None, None
+
+        if process.returncode != 0:
+            await msg.edit(content=f"❌ Video generation failed (exit code {process.returncode}). Check that all parameters are valid.")
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            return None, None
+
+        if not os.path.exists(output):
+            await msg.edit(content="❌ Video generation failed: output file not found.")
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            return None, None
+
+        elapsed = timemodule.time() - start_time
+        if done_line:
+            tail = done_line.replace(output, output_path)
+            await msg.edit(content=f"✅ {tail} (took {elapsed:.1f}s)")
+        else:
+            await msg.edit(content=f"✅ Done! Video saved to: {output_path} (took {elapsed:.1f}s)")
+        return discord.File(output), tmpdir
+
+    except Exception as e:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        await msg.edit(content=f"❌ Video generation failed: {e}")
+        return None, None
     finally:
-        _replay_logger.removeHandler(_oom_handler)
         video_generation_running = False
 
 class MyClient(discord.Client):
@@ -2072,7 +2040,12 @@ async def admin_coolsolves_exe(
     quality="Render quality: 1 (High, default) or 2 (Ultra)",
     compression="Video compression CRF 10–40, lower = better quality (default: 18)",
     fps="Output framerate 1–240 (default: 60)",
-    force_fringe="Force fringe color pattern"
+    force_fringe="Force fringe color pattern",
+    speed="Playback speed multiplier (e.g. 2.0 for 2x faster, 0.5 for half speed)",
+    hide_numbers="Hide tile numbers for a cleaner look",
+    no_border="Remove tile borders",
+    no_layout="Render puzzle only without timer/stats panel",
+    no_secondary_border="Remove secondary color bar borders"
 )
 @app_commands.choices(
     quality=[
@@ -2091,7 +2064,12 @@ async def admin_getpb_exe(
     quality: int = 1,
     compression: int = 18,
     fps: int = 60,
-    force_fringe: bool = False
+    force_fringe: bool = False,
+    speed: float = 1.0,
+    hide_numbers: bool = False,
+    no_border: bool = False,
+    no_layout: bool = False,
+    no_secondary_border: bool = False
 ):
     await interaction.response.defer(ephemeral=False)
     
@@ -2287,7 +2265,12 @@ async def admin_getpb_exe(
                     quality=quality,
                     compression=compression,
                     fps=fps,
-                    force_fringe=force_fringe
+                    force_fringe=force_fringe,
+                    speed=speed,
+                    hide_numbers=hide_numbers,
+                    no_border=no_border,
+                    no_layout=no_layout,
+                    no_secondary_border=no_secondary_border,
                 )
             except Exception as e:
                 await msg.edit(content=f"❌ Video generation failed: {e}")
@@ -2308,7 +2291,6 @@ async def admin_getpb_exe(
             await interaction.followup.send(**send_kw)
 
         if video_tmpdir:
-            import shutil
             shutil.rmtree(video_tmpdir, ignore_errors=True)
 
     except Exception as e:
@@ -2462,7 +2444,12 @@ async def splits(
     quality="Render quality: 1 (High, default) or 2 (Ultra)",
     compression="Video compression CRF 10–40, lower = better quality but larger file (default: 18)",
     fps="Output framerate 1–240 (default: 60)",
-    force_fringe="Force fringe color pattern instead of auto-detecting grids"
+    force_fringe="Force fringe color pattern instead of auto-detecting grids",
+    speed="Playback speed multiplier (e.g. 2.0 for 2x faster, 0.5 for half speed)",
+    hide_numbers="Hide tile numbers for a cleaner look",
+    no_border="Remove tile borders",
+    no_layout="Render puzzle only without timer/stats panel",
+    no_secondary_border="Remove secondary color bar borders"
 )
 @app_commands.choices(
     quality=[
@@ -2483,7 +2470,12 @@ async def makereplay(
     quality: int = 1,
     compression: int = 18,
     fps: int = 60,
-    force_fringe: bool = False
+    force_fringe: bool = False,
+    speed: float = 1.0,
+    hide_numbers: bool = False,
+    no_border: bool = False,
+    no_layout: bool = False,
+    no_secondary_border: bool = False
 ):
     await interaction.response.defer(ephemeral=False)
 
@@ -2600,11 +2592,15 @@ async def makereplay(
             try:
                 video_file, video_tmpdir = await generate_replay_video(
                     msg, replay_url,
-                    solution=solution, tps=tps, scramble=scramble, movetimes=movetimes,
                     quality=quality,
                     compression=compression,
                     fps=fps,
-                    force_fringe=force_fringe
+                    force_fringe=force_fringe,
+                    speed=speed,
+                    hide_numbers=hide_numbers,
+                    no_border=no_border,
+                    no_layout=no_layout,
+                    no_secondary_border=no_secondary_border,
                 )
             except Exception as e:
                 await msg.edit(content=f"❌ Video generation failed: {e}")
@@ -2662,7 +2658,6 @@ async def makereplay(
                 await _try_send(content="Replay URL — see attached file.", files=extra)
 
         if video_tmpdir:
-            import shutil
             shutil.rmtree(video_tmpdir, ignore_errors=True)
 
     except Exception as e:
@@ -2678,7 +2673,12 @@ async def makereplay(
     quality="Render quality: 1 (High, default) or 2 (Ultra)",
     compression="Video compression CRF 10–40, lower = better quality (default: 18)",
     fps="Output framerate 1–240 (default: 60)",
-    force_fringe="Force fringe color pattern"
+    force_fringe="Force fringe color pattern",
+    speed="Playback speed multiplier (e.g. 2.0 for 2x faster, 0.5 for half speed)",
+    hide_numbers="Hide tile numbers for a cleaner look",
+    no_border="Remove tile borders",
+    no_layout="Render puzzle only without timer/stats panel",
+    no_secondary_border="Remove secondary color bar borders"
 )
 @app_commands.choices(
     quality=[
@@ -2695,7 +2695,12 @@ async def admin_replay(
     quality: int = 1,
     compression: int = 18,
     fps: int = 60,
-    force_fringe: bool = False
+    force_fringe: bool = False,
+    speed: float = 1.0,
+    hide_numbers: bool = False,
+    no_border: bool = False,
+    no_layout: bool = False,
+    no_secondary_border: bool = False
 ):
     ALLOWED_USER_IDS = [YOUR_USER_ID]
 
@@ -2774,7 +2779,12 @@ async def admin_replay(
                 quality=quality,
                 compression=compression,
                 fps=fps,
-                force_fringe=force_fringe
+                force_fringe=force_fringe,
+                speed=speed,
+                hide_numbers=hide_numbers,
+                no_border=no_border,
+                no_layout=no_layout,
+                no_secondary_border=no_secondary_border,
             )
         except Exception as e:
             await msg.edit(content=f"❌ Video generation failed: {e}")
@@ -2786,7 +2796,6 @@ async def admin_replay(
         await interaction.followup.send(embed=embed, view=view, ephemeral=False)
 
     if video_tmpdir:
-        import shutil
         shutil.rmtree(video_tmpdir, ignore_errors=True)
 
 
