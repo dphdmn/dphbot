@@ -30,7 +30,7 @@ if SLIDYREPLAY_DIR not in sys.path:
 from replay_init import init_replay_generator as update_replay_repo
 update_replay_repo(force_update=True)
 
-from replay_generator import ReplayGenerator, expand_solution, parse_scramble_guess
+from replay_generator import ReplayGenerator, expand_solution, parse_scramble_guess, compress_solution
 from replay_video import parse_replay_url
 
 load_dotenv()
@@ -2506,17 +2506,28 @@ async def makereplay(
                 is_url_input = True
                 replay_url = raw
             else:
-                solution = raw
+                solution = raw.replace(" ", "")
         elif solution_or_url:
             raw = solution_or_url.strip()
             if raw.startswith(('http://', 'https://')):
                 is_url_input = True
                 replay_url = raw
             else:
-                solution = raw
+                solution = raw.replace(" ", "")
         else:
             await interaction.followup.send("You must provide a solution text, a replay URL, or upload a file.", ephemeral=True)
             return
+
+        if not is_url_input and solution:
+            expanded = expand_solution(solution)
+            if len(expanded) > 1_000_000:
+                await interaction.followup.send("Puzzle solution exceeds 1 million moves.", ephemeral=True)
+                return
+            solution = compress_solution(expanded)
+            nums = [int(m) for m in re.findall(r"\d+", solution)]
+            if any(n > 999 for n in nums):
+                await interaction.followup.send("Puzzles with a move count above 999 per tile are not allowed.", ephemeral=True)
+                return
 
         if is_url_input:
             url_solution, url_tps, url_scramble, url_movetimes = parse_replay_url(replay_url)
