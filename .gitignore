@@ -13,3 +13,6 @@ replay_gui/build/
 *.spec
 replay_genereator/*
 replay_genereator
+render_cache/*
+slidyreplay/*
+slidyreplay
