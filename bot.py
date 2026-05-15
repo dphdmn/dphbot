@@ -30,7 +30,7 @@ if SLIDYREPLAY_DIR not in sys.path:
 from replay_init import init_replay_generator as update_replay_repo
 update_replay_repo(force_update=True)
 
-from replay_generator import ReplayGenerator, expand_solution, parse_scramble_guess, compress_solution
+from replay_generator import ReplayGenerator, expand_solution, parse_scramble_guess, compress_solution, scramble_to_puzzle
 from replay_video import parse_replay_url
 
 load_dotenv()
@@ -87,6 +87,68 @@ def _get_splits(data: str) -> str:
     except Exception:
         return "splits are failed"
 
+VIDEO_QUALITY_MIN = 720
+VIDEO_QUALITY_DEFAULT = 720
+VIDEO_MOVE_LIMIT = 1000000
+
+def normalize_video_quality(quality: int) -> int:
+    if quality is None:
+        return VIDEO_QUALITY_DEFAULT
+    quality = int(quality)
+    if quality < VIDEO_QUALITY_MIN:
+        raise ValueError(
+            "Quality must be a video height of 720 or higher "
+            "(for example: 720, 1080, 1440, or 2160)."
+        )
+    return quality
+
+def video_options_requested(
+    quality: int = VIDEO_QUALITY_DEFAULT,
+    compression: int = 18,
+    fps: int = 60,
+    fast_render: bool = False,
+    force_fringe: bool = False,
+    speed: float = 1.0,
+    hide_numbers: bool = False,
+    no_border: bool = False,
+    no_layout: bool = False,
+    no_secondary_border: bool = False,
+) -> bool:
+    return any([
+        quality != VIDEO_QUALITY_DEFAULT,
+        compression != 18,
+        fps != 60,
+        fast_render,
+        force_fringe,
+        speed != 1.0,
+        hide_numbers,
+        no_border,
+        no_layout,
+        no_secondary_border,
+    ])
+
+def is_small_video_puzzle(width: int, height: int) -> bool:
+    return width <= 10 and height <= 10
+
+def should_generate_video_for(
+    create_video: bool,
+    width: int = None,
+    height: int = None,
+    **video_options,
+) -> bool:
+    small_puzzle = (
+        width is not None
+        and height is not None
+        and is_small_video_puzzle(width, height)
+    )
+    return create_video or small_puzzle or video_options_requested(**video_options)
+
+def get_replay_video_info(replay_url: str):
+    solution, _, scramble, _ = parse_replay_url(replay_url)
+    expanded = expand_solution(solution)
+    matrix = scramble_to_puzzle(scramble) if scramble else parse_scramble_guess(solution)
+    return len(matrix[0]), len(matrix), len(expanded)
+
 async def generate_replay_video(msg, replay_url, output_path="replay.mp4", **kwargs):
     global video_generation_running
     if video_generation_running:
@@ -113,9 +175,10 @@ async def generate_replay_video(msg, replay_url, output_path="replay.mp4", **kwa
         except Exception:
             header_text = ""
 
+        quality = normalize_video_quality(kwargs.get("quality", VIDEO_QUALITY_DEFAULT))
         main_py = os.path.join(SLIDYREPLAY_DIR, "main.py")
         cmd = [sys.executable, main_py, "--file", url_file, "--output", output,
-               "--quality", str(kwargs.get("quality", 1)),
+               "--quality", str(quality),
                "--fps", str(kwargs.get("fps", 60)),
                "--compression", str(kwargs.get("compression", 18))]
 
@@ -132,6 +195,8 @@ async def generate_replay_video(msg, replay_url, output_path="replay.mp4", **kwa
             cmd.append("--no-layout")
         if kwargs.get("no_secondary_border"):
             cmd.append("--no-secondary-border")
+        if kwargs.get("slow_render", True):
+            cmd.append("--slow-render")
 
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
@@ -2036,22 +2101,17 @@ async def admin_coolsolves_exe(
     time_limit="Optional maximum time in seconds",
     moves_limit="Optional maximum moves",
     hours_limit="Optional time window in hours (e.g., 24 for last day)",
-    create_video="Also generate an MP4 replay video (may take a moment)",
-    quality="Render quality: 1 (High, default) or 2 (Ultra)",
+    create_video="Force MP4 video generation for puzzles larger than 10x10",
+    quality="Target video height, 720 or higher (default: 720; e.g. 720, 1080, 1440, 2160)",
     compression="Video compression CRF 10–40, lower = better quality (default: 18)",
     fps="Output framerate 1–240 (default: 60)",
+    fast_render="Render faster but risk a larger file that may exceed Discord's upload limit",
     force_fringe="Force fringe color pattern",
     speed="Playback speed multiplier (e.g. 2.0 for 2x faster, 0.5 for half speed)",
     hide_numbers="Hide tile numbers for a cleaner look",
     no_border="Remove tile borders",
     no_layout="Render puzzle only without timer/stats panel",
     no_secondary_border="Remove secondary color bar borders"
-)
-@app_commands.choices(
-    quality=[
-        app_commands.Choice(name="1 — High (default)", value=1),
-        app_commands.Choice(name="2 — Ultra", value=2),
-    ]
 )
 async def admin_getpb_exe(
     interaction: discord.Interaction,
@@ -2061,9 +2121,10 @@ async def admin_getpb_exe(
     moves_limit: int = None,
     hours_limit: int = None,
     create_video: bool = False,
-    quality: int = 1,
+    quality: int = VIDEO_QUALITY_DEFAULT,
     compression: int = 18,
     fps: int = 60,
+    fast_render: bool = False,
     force_fringe: bool = False,
     speed: float = 1.0,
     hide_numbers: bool = False,
@@ -2079,6 +2140,11 @@ async def admin_getpb_exe(
             return
         if not (10 <= compression <= 40):
             await interaction.followup.send("Compression must be between 10 and 40.", ephemeral=True)
+            return
+        try:
+            quality = normalize_video_quality(quality)
+        except ValueError as e:
+            await interaction.followup.send(str(e), ephemeral=True)
             return
 
         if interaction.user.id != YOUR_USER_ID:
@@ -2257,7 +2323,25 @@ async def admin_getpb_exe(
 
         video_file = None
         video_tmpdir = None
-        if create_video:
+        should_create_video = should_generate_video_for(
+            create_video,
+            width,
+            height,
+            quality=quality,
+            compression=compression,
+            fps=fps,
+            fast_render=fast_render,
+            force_fringe=force_fringe,
+            speed=speed,
+            hide_numbers=hide_numbers,
+            no_border=no_border,
+            no_layout=no_layout,
+            no_secondary_border=no_secondary_border,
+        )
+        if should_create_video and moves >= VIDEO_MOVE_LIMIT:
+            embed.description += f"\n*Video skipped: replay has {moves} moves; limit is {VIDEO_MOVE_LIMIT}.*"
+            should_create_video = False
+        if should_create_video:
             msg = await interaction.followup.send("🎥 Generating replay video...", ephemeral=False)
             try:
                 video_file, video_tmpdir = await generate_replay_video(
@@ -2265,6 +2349,7 @@ async def admin_getpb_exe(
                     quality=quality,
                     compression=compression,
                     fps=fps,
+                    slow_render=not fast_render,
                     force_fringe=force_fringe,
                     speed=speed,
                     hide_numbers=hide_numbers,
@@ -2431,7 +2516,7 @@ async def splits(
         await interaction.followup.send(f"An error occurred while processing: {str(e)}", ephemeral=True)
 
 
-@client.tree.command(description="Generate a replay link from your solution or replay URL")
+@client.tree.command(description="Generate a replay link and MP4 video from your solution or replay URL")
 @app_commands.describe(
     solution_or_url="Solution string (e.g., R2ULDLU2R3D3L3UR2U2L2) or a SlidySim replay URL (starts with https://)",
     file="Optional file containing the solution or a replay URL",
@@ -2440,22 +2525,16 @@ async def splits(
     tps="Optional TPS value (do not use with time)",
     time="Optional solve time in seconds (e.g., 0.909) — do not use with tps",
     movetimes="Optional comma-separated move times in ms (e.g., 0,16,50,90326947,...)",
-    create_video="Also generate an MP4 replay video (only for solutions < 4000 moves)",
-    quality="Render quality: 1 (High, default) or 2 (Ultra)",
+    quality="Target video height, 720 or higher (default: 720; e.g. 720, 1080, 1440, 2160)",
     compression="Video compression CRF 10–40, lower = better quality but larger file (default: 18)",
     fps="Output framerate 1–240 (default: 60)",
+    fast_render="Render faster but risk a larger file that may exceed Discord's upload limit",
     force_fringe="Force fringe color pattern instead of auto-detecting grids",
     speed="Playback speed multiplier (e.g. 2.0 for 2x faster, 0.5 for half speed)",
     hide_numbers="Hide tile numbers for a cleaner look",
     no_border="Remove tile borders",
     no_layout="Render puzzle only without timer/stats panel",
     no_secondary_border="Remove secondary color bar borders"
-)
-@app_commands.choices(
-    quality=[
-        app_commands.Choice(name="1 — High (default)", value=1),
-        app_commands.Choice(name="2 — Ultra", value=2),
-    ]
 )
 async def makereplay(
     interaction: discord.Interaction,
@@ -2466,10 +2545,10 @@ async def makereplay(
     tps: float = None,
     time: float = None,
     movetimes: str = None,
-    create_video: bool = False,
-    quality: int = 1,
+    quality: int = VIDEO_QUALITY_DEFAULT,
     compression: int = 18,
     fps: int = 60,
+    fast_render: bool = False,
     force_fringe: bool = False,
     speed: float = 1.0,
     hide_numbers: bool = False,
@@ -2486,6 +2565,11 @@ async def makereplay(
         if not (10 <= compression <= 40):
             await interaction.followup.send("Compression must be between 10 and 40.", ephemeral=True)
             return
+        try:
+            quality = normalize_video_quality(quality)
+        except ValueError as e:
+            await interaction.followup.send(str(e), ephemeral=True)
+            return
 
         if tps is not None and time is not None:
             await interaction.followup.send("Provide either tps or time, not both.", ephemeral=True)
@@ -2496,6 +2580,7 @@ async def makereplay(
             return
 
         is_url_input = False
+        parsed_size = None
 
         if file:
             content = await file.read()
@@ -2552,7 +2637,6 @@ async def makereplay(
                     kwargs['tps'] = tps
                 replay_url = gen.generate_simple_replay(solution, **kwargs)
         else:
-            parsed_size = None
             if size:
                 parts = size.lower().split('x')
                 if len(parts) == 2:
@@ -2598,10 +2682,23 @@ async def makereplay(
             await interaction.followup.send(f"DEBUG getsplits fail: {type(e).__name__}: {e}", ephemeral=True)
             splits_data = "splits are failed"
 
+        replay_moves = None
+        try:
+            _, _, replay_moves = get_replay_video_info(replay_url)
+        except Exception:
+            try:
+                replay_moves = len(expand_solution(solution))
+            except Exception:
+                replay_moves = None
+
         # Video generation
         video_file = None
         video_tmpdir = None
-        if create_video:
+        should_create_video = replay_moves is None or replay_moves < VIDEO_MOVE_LIMIT
+        video_skip_note = ""
+        if not should_create_video:
+            video_skip_note = f"\nVideo skipped: replay has {replay_moves} moves; limit is {VIDEO_MOVE_LIMIT}."
+        if should_create_video:
             msg = await interaction.followup.send("🎥 Generating replay video...", ephemeral=False)
             try:
                 video_file, video_tmpdir = await generate_replay_video(
@@ -2609,6 +2706,7 @@ async def makereplay(
                     quality=quality,
                     compression=compression,
                     fps=fps,
+                    slow_render=not fast_render,
                     force_fringe=force_fringe,
                     speed=speed,
                     hide_numbers=hide_numbers,
@@ -2620,7 +2718,7 @@ async def makereplay(
                 await msg.edit(content=f"❌ Video generation failed: {e}")
 
         url_length = len(replay_url)
-        link_md = f"[Replay]({replay_url})"
+        link_md = f"[Replay]({replay_url}){video_skip_note}"
 
         async def _try_send(content=None, file=None, files=None):
             kw = {}
@@ -2655,7 +2753,7 @@ async def makereplay(
             else:
                 await _try_send(content=link_md, file=video_file)
         else:
-            file_content_str = f"Replay URL (too long for direct link):\n{replay_url}"
+            file_content_str = f"Replay URL (too long for direct link):\n{replay_url}{video_skip_note}"
             url_file = discord.File(io.BytesIO(file_content_str.encode('utf-8')), filename="replay_url.txt")
             have_splits = splits_data and splits_data not in ("Invalid splits data", "splits are failed")
             if have_splits:
@@ -2683,10 +2781,11 @@ async def makereplay(
     file="Optional file containing the replay URL",
     url="Optional replay URL directly (alternative to file)",
     metadata="Optional metadata text for the embed title",
-    create_video="Also generate an MP4 replay video (may take a moment)",
-    quality="Render quality: 1 (High, default) or 2 (Ultra)",
+    create_video="Force MP4 video generation when puzzle size cannot be inferred",
+    quality="Target video height, 720 or higher (default: 720; e.g. 720, 1080, 1440, 2160)",
     compression="Video compression CRF 10–40, lower = better quality (default: 18)",
     fps="Output framerate 1–240 (default: 60)",
+    fast_render="Render faster but risk a larger file that may exceed Discord's upload limit",
     force_fringe="Force fringe color pattern",
     speed="Playback speed multiplier (e.g. 2.0 for 2x faster, 0.5 for half speed)",
     hide_numbers="Hide tile numbers for a cleaner look",
@@ -2694,21 +2793,16 @@ async def makereplay(
     no_layout="Render puzzle only without timer/stats panel",
     no_secondary_border="Remove secondary color bar borders"
 )
-@app_commands.choices(
-    quality=[
-        app_commands.Choice(name="1 — High (default)", value=1),
-        app_commands.Choice(name="2 — Ultra", value=2),
-    ]
-)
 async def admin_replay(
     interaction: discord.Interaction,
     file: discord.Attachment = None,
     url: str = None,
     metadata: str = None,
     create_video: bool = False,
-    quality: int = 1,
+    quality: int = VIDEO_QUALITY_DEFAULT,
     compression: int = 18,
     fps: int = 60,
+    fast_render: bool = False,
     force_fringe: bool = False,
     speed: float = 1.0,
     hide_numbers: bool = False,
@@ -2723,6 +2817,11 @@ async def admin_replay(
         return
     if not (10 <= compression <= 40):
         await interaction.response.send_message("Compression must be between 10 and 40.", ephemeral=True)
+        return
+    try:
+        quality = normalize_video_quality(quality)
+    except ValueError as e:
+        await interaction.response.send_message(str(e), ephemeral=True)
         return
 
     if interaction.user.id not in ALLOWED_USER_IDS:
@@ -2747,6 +2846,14 @@ async def admin_replay(
         filename_ts = str(int(timemodule.time()))
         filename = f"{filename_ts}.txt"
         file_content = (await file.read()).decode('utf-8')
+
+    replay_width = None
+    replay_height = None
+    replay_moves = None
+    try:
+        replay_width, replay_height, replay_moves = get_replay_video_info(file_content)
+    except Exception:
+        pass
 
     try:
         slidy_url = save_replay_and_generate_url(file_content, filename)
@@ -2773,6 +2880,25 @@ async def admin_replay(
     else:
         embed_description = "*Replay may take a minute to activate.*"
 
+    should_create_video = should_generate_video_for(
+        create_video,
+        replay_width,
+        replay_height,
+        quality=quality,
+        compression=compression,
+        fps=fps,
+        fast_render=fast_render,
+        force_fringe=force_fringe,
+        speed=speed,
+        hide_numbers=hide_numbers,
+        no_border=no_border,
+        no_layout=no_layout,
+        no_secondary_border=no_secondary_border,
+    )
+    if should_create_video and replay_moves is not None and replay_moves >= VIDEO_MOVE_LIMIT:
+        embed_description += f"\n*Video skipped: replay has {replay_moves} moves; limit is {VIDEO_MOVE_LIMIT}.*"
+        should_create_video = False
+
     embed = discord.Embed(
         title=f"🌟 {metadata or 'Replay Link'} 🌟",
         description=embed_description,
@@ -2785,7 +2911,7 @@ async def admin_replay(
 
     video_file = None
     video_tmpdir = None
-    if create_video:
+    if should_create_video:
         msg = await interaction.followup.send("🎥 Generating replay video...", ephemeral=False)
         try:
             video_file, video_tmpdir = await generate_replay_video(
@@ -2793,6 +2919,7 @@ async def admin_replay(
                 quality=quality,
                 compression=compression,
                 fps=fps,
+                slow_render=not fast_render,
                 force_fringe=force_fringe,
                 speed=speed,
                 hide_numbers=hide_numbers,
