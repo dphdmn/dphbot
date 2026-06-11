@@ -23,7 +23,7 @@ RENAME_MAP = {
     'ivy': 'daanbe', 'skye': 'iota', 'eggben': 'ben1996123', 'eskiu': 'sq',
     'HashPanda': 'Rafael', 'wiser': 'wiserboblouis', 'garyx': 'gr21xx',
     'ekimmy': 'ekim', 'ap_web': 'ap', 'juunas': 'asdfghqwerty',
-    'minsie': 'MegaminX', '554': 'yzx', 'JonasCuber10': 'JonasCuber11'
+    'minsie': 'MegaminX', '554': 'yzx', 'JonasCuber10': 'JonasCuber11', 'DreamerTheWolfFox': 'Dreamer'
 }
 
 # ----- Category lists for each power mode -----
