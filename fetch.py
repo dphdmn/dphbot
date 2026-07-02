@@ -143,11 +143,29 @@ def is_better(web, live, leaderboard_type):
         return web_val < live_val
 
 
+def deduplicate_player_scores(scores):
+    """Remove duplicate scores where the same player has multiple entries
+    in the same category, keeping only the best one."""
+    if not scores:
+        return scores or []
+
+    best = {}
+    for s in scores:
+        key = get_category_key(s)
+        existing = best.get(key)
+        if existing is None or is_better(s, existing, s['leaderboardType']):
+            best[key] = s
+
+    return list(best.values())
+
 def merge_web_pbs(live_data, web_data):
     """
     Merge live and web scores, preferring the better one.
     Marks each score with an 'isWeb' boolean.
     """
+    live_data = deduplicate_player_scores(live_data)
+    web_data = deduplicate_player_scores(web_data)
+
     merged = {}
     for s in live_data:
         s['isWeb'] = False
@@ -333,9 +351,9 @@ def main():
         merged = merge_web_pbs(live_scores, web_scores)
         print(f"Merged total: {len(merged)} entries (live + web).")
     else:
-        for s in live_scores:
+        merged = deduplicate_player_scores(live_scores)
+        for s in merged:
             s['isWeb'] = False
-        merged = live_scores
 
     # 4. Output to combination-specific file
     with open(combo_path, 'w', encoding='utf-8') as f:
