@@ -1536,10 +1536,7 @@ async def updateweb(interaction: discord.Interaction):
             error_msg = stderr.decode('utf-8') if stderr else "Unknown error"
             await msg.edit(content=f"❌ Web update failed after {time_str}\n{error_msg[:1000]}")
             return
-        await msg.edit(content=f""":egg: Web backup updated successfully! (took {time_str})
-
-**Leaderboard URL:** https://slidysim.github.io/lb
-**Web-only scores:** https://slidysim.github.io/archive""")
+        await msg.edit(content=f""":egg: [Leaderboard](https://slidysim.github.io/lb) updated successfully! (took {time_str})""")
     except Exception as e:
         await interaction.followup.send(f"❌ Error running web update: {str(e)}")
     finally:
